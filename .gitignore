@@ -40,6 +40,8 @@ STUDIO-LOCAL.cmd
 data/
 browser_profile/
 scratch/
+*.db
+api-tracker/*.db
 
 # OS
 .DS_Store

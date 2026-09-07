@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1263,7 +1264,52 @@ def _log_chat_finished(
     attempt: int,
     result: "GptChatResult",
     include_task_id: bool = True,
+    prompt_text: str = "",
 ) -> None:
+    # 1. Запись в локальный API Tracker (fail-safe, без задержек)
+    try:
+        from app.services.api_tracker_hook import record_api_call
+
+        u = result.usage or {}
+        p_tok = int(u.get("prompt_tokens") or 0)
+        c_tok = int(u.get("completion_tokens") or 0)
+        if c_tok == 0 and result.text:
+            c_tok = max(1, len(result.text) // 4)
+        if p_tok == 0:
+            if prompt_text:
+                p_tok = max(10, len(prompt_text) // 4)
+            else:
+                p_tok = 50
+        cached_tok = int((u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+        dur = float((result.raw or {}).get("duration_sec") or 0.0)
+
+        # Нормализация имени провайдера
+        prov = (provider_label or "").split()[0].lower().replace(":", "").replace(",", "")
+        model_name = result.model or use_model
+        if "vibecode" in provider_label.lower():
+            prov = "vibecode"
+        elif "gemini" in model_name.lower():
+            prov = "google"
+        elif "deepseek" in model_name.lower():
+            prov = "deepseek"
+        elif "kie" in provider_label.lower() or "kie" in prov:
+            prov = "kie"
+        elif not prov:
+            prov = "openai"
+
+        record_api_call(
+            provider=prov,
+            model=model_name,
+            prompt_tokens=p_tok,
+            completion_tokens=c_tok,
+            cached_tokens=cached_tok,
+            duration_sec=dur,
+            status_code=200,
+            project_source="chat/pipeline",
+        )
+    except Exception as e:
+        logger.debug(f"api_tracker_hook error: {e}")
+
     task_id = ""
     if include_task_id:
         task_id = result.response_id or (result.raw or {}).get("id") or "-"
@@ -1785,26 +1831,32 @@ async def _chat_completions_stream(
                             resp.status_code, err_txt, use_model=use_model
                         )
                     async for raw in resp.aiter_lines():
-                        if raw:
-                            lines.append(raw)
-                            if on_delta and raw.startswith("data:"):
-                                piece = raw[5:].strip()
-                                if piece and piece != "[DONE]":
-                                    try:
-                                        chunk_obj = json.loads(piece)
-                                        choices = chunk_obj.get("choices") or []
-                                        if choices and isinstance(choices, list):
-                                            delta_obj = choices[0].get("delta") or {}
-                                            content = delta_obj.get("content")
-                                            if content:
-                                                if asyncio.iscoroutinefunction(on_delta):
-                                                    await on_delta(content)
-                                                else:
-                                                    res = on_delta(content)
-                                                    if asyncio.iscoroutine(res):
-                                                        await res
-                                    except Exception:
-                                        pass
+                        if not raw:
+                            continue
+                        lines.append(raw)
+                        clean_line = raw.strip()
+                        if clean_line in ("data: [DONE]", "data:[DONE]"):
+                            break
+                        if clean_line.startswith("data:"):
+                            piece = clean_line[5:].strip()
+                            if piece == "[DONE]":
+                                break
+                            if on_delta and piece:
+                                try:
+                                    chunk_obj = json.loads(piece)
+                                    choices = chunk_obj.get("choices") or []
+                                    if choices and isinstance(choices, list):
+                                        delta_obj = choices[0].get("delta") or {}
+                                        content = delta_obj.get("content")
+                                        if content:
+                                            if asyncio.iscoroutinefunction(on_delta):
+                                                await on_delta(content)
+                                            else:
+                                                res = on_delta(content)
+                                                if asyncio.iscoroutine(res):
+                                                    await res
+                                except Exception:
+                                    pass
         except GptApiError:
             raise
         except BaseException as e:
@@ -2263,6 +2315,7 @@ async def chat(
     last_exc: Exception | None = None
     while attempt <= retries:
         attempt += 1
+        t0 = time.perf_counter()
         try:
             if responses_mode:
                 result = await _chat_responses_stream(
@@ -2362,11 +2415,16 @@ async def chat(
                     xlsx_write_contract=xlsx_write_contract,
                     volume_complete=volume_complete,
                 )
+                if not (result.raw or {}).get("duration_sec"):
+                    if result.raw is None:
+                        result.raw = {}
+                    result.raw["duration_sec"] = round(time.perf_counter() - t0, 2)
                 _log_chat_finished(
                     provider_label=provider_label,
                     use_model=use_model,
                     attempt=attempt,
                     result=result,
+                    prompt_text=prompt,
                 )
                 return result
 
@@ -2445,11 +2503,16 @@ async def chat(
                     xlsx_write_contract=xlsx_write_contract,
                     volume_complete=volume_complete,
                 )
+                if not (result.raw or {}).get("duration_sec"):
+                    if result.raw is None:
+                        result.raw = {}
+                    result.raw["duration_sec"] = round(time.perf_counter() - t0, 2)
                 _log_chat_finished(
                     provider_label=provider_label,
                     use_model=use_model,
                     attempt=attempt,
                     result=result,
+                    prompt_text=prompt,
                 )
                 return result
 
@@ -2482,12 +2545,17 @@ async def chat(
                 xlsx_write_contract=xlsx_write_contract,
                 volume_complete=volume_complete,
             )
+            if not (result.raw or {}).get("duration_sec"):
+                if result.raw is None:
+                    result.raw = {}
+                result.raw["duration_sec"] = round(time.perf_counter() - t0, 2)
             _log_chat_finished(
                 provider_label=provider_label,
                 use_model=use_model,
                 attempt=attempt,
                 result=result,
                 include_task_id=False,
+                prompt_text=prompt,
             )
             return result
         except httpx.TimeoutException:

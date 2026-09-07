@@ -1120,3 +1120,56 @@ async def test_ask_api_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     got = gw.get_session(s["id"])
     assert got["status"] == "error"
     assert any(m["role"] == "system" for m in got["messages"])
+
+
+def test_wants_image_file_distinguishes_analysis_and_generation() -> None:
+    # Обычный запрос на поиск / генерацию
+    assert gw._wants_image_file("пришли мне картику фантом") is True
+    assert gw._wants_image_file("найди фото котика") is True
+
+    # Запросы на анализ фото / вложений — НЕ должны требовать скачивания из интернета
+    assert gw._wants_image_file("Что изображено на фото?") is False
+    assert gw._wants_image_file("Опиши фото") is False
+    assert gw._wants_image_file("Проанализируй картинку") is False
+    assert gw._wants_image_file("Кто на фотографии?") is False
+    assert gw._wants_image_file("Что ты видишь на картинке?") is False
+    assert gw._wants_image_file("Посмотри на скриншот и найди ошибку в коде") is False
+
+    # При наличии прикрепленного изображения обычные вопросы не триггерят веб-поиск
+    assert gw._wants_image_file("какой здесь фон?", has_image_attachments=True) is False
+    assert (
+        gw._wants_image_file(
+            "найди в интернете похожую картинку", has_image_attachments=True
+        )
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_ask_image_analysis_does_not_call_web_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.gpt_api as ga
+    import app.services.gpt_client as gc
+
+    web_fetch_called = False
+
+    async def fake_fetch(*a, **k):
+        nonlocal web_fetch_called
+        web_fetch_called = True
+        return []
+
+    class FakeGpt:
+        async def ask_with_files(self, *a, **k):
+            return "На фото изображен кот на диване."
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    monkeypatch.setattr(ga, "fetch_web_images", fake_fetch)
+
+    s = gw.create_session()
+    gw.save_attachment(s["id"], "cat.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+    out = await gw.ask(s["id"], "Что изображено на фото?")
+    assert web_fetch_called is False
+    assert any(m["role"] == "user" for m in out["messages"])
+    assert any(m["role"] == "assistant" for m in out["messages"])
+

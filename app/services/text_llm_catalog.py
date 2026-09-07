@@ -24,7 +24,7 @@ CATALOG: list[dict[str, str]] = [
         "group": "OpenAI",
         "label": "GPT 5.5",
         "site": "vibecode.moe",
-        "api_model": "gpt-5.5",
+        "api_model": "gpt-5.6-sol",
     },
     {
         "id": "gpt-5.6-sol-vibecode",
@@ -104,6 +104,9 @@ CATALOG: list[dict[str, str]] = [
 
 _PROVIDERS = frozenset({"kie", "vibecode"})
 _MODEL_ALIASES = {
+    "gpt-5.5": "gpt-5.6-sol-vibecode",
+    "gpt-5-5": "gpt-5.6-sol-vibecode",
+    "gpt-5.5-vibecode": "gpt-5.6-sol-vibecode",
     "gpt-5.6-sol": "gpt-5.6-sol-vibecode",
     "gpt-5-6-sol": "gpt-5.6-sol-vibecode",
     "gpt-5.6-sol-vibecode": "gpt-5.6-sol-vibecode",

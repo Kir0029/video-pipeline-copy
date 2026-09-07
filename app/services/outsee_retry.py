@@ -980,6 +980,20 @@ async def generate_image_with_retries(
                             )
                         except Exception:  # noqa: BLE001
                             logger.debug("kie sidecar write skipped", exc_info=True)
+                        try:
+                            from app.services.api_tracker_hook import record_api_call
+
+                            record_api_call(
+                                provider="kie",
+                                model=str(raw_slug or "image-model"),
+                                call_type="image",
+                                media_count=1,
+                                status_code=200,
+                                project_source=f"pipeline_project_{pid}" if pid else "pipeline",
+                                metadata={"prompt": send_prompt[:500]},
+                            )
+                        except Exception:
+                            pass
                         return result
                     if use_outsee_api:
                         result = await outsee_api_generate_image(
@@ -1015,6 +1029,20 @@ async def generate_image_with_retries(
                             )
                         except Exception:  # noqa: BLE001
                             logger.debug("outsee sidecar write skipped", exc_info=True)
+                        try:
+                            from app.services.api_tracker_hook import record_api_call
+
+                            record_api_call(
+                                provider="outsee",
+                                model=slug,
+                                call_type="image",
+                                media_count=1,
+                                status_code=200,
+                                project_source=f"pipeline_project_{pid}" if pid else "pipeline",
+                                metadata={"prompt": send_prompt[:500]},
+                            )
+                        except Exception:
+                            pass
                         return result
                     return await outsee.generate_image(
                         send_prompt, out_path, **attempt_kwargs
@@ -1386,6 +1414,21 @@ async def generate_video_with_retries(
                 )
             except Exception:  # noqa: BLE001
                 logger.debug("outsee video sidecar skipped", exc_info=True)
+            try:
+                from app.services.api_tracker_hook import record_api_call
+
+                record_api_call(
+                    provider="outsee",
+                    model=slug,
+                    call_type="video",
+                    media_count=1,
+                    duration_sec=float(dur or 5),
+                    status_code=200,
+                    project_source=f"pipeline_project_{project_id}" if project_id else "pipeline",
+                    metadata={"prompt": send_prompt[:500]},
+                )
+            except Exception:
+                pass
             return result
         return await outsee.generate_video(
             send_prompt, out_path, project_id=project_id, **attempt_kwargs
