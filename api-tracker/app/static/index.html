@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="ru" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>API Tracker & Cost Monitor</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: '#22d3ee',
+            darkBg: '#0a0a0c',
+            darkCard: '#121217',
+            darkCardHover: '#181820',
+            darkBorder: 'rgba(255, 255, 255, 0.08)',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      background-color: #0a0a0c;
+      color: #f3f4f6;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      user-select: none;
+    }
+    /* Кастомный скроллбар */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(34, 211, 238, 0.4); }
+
+    /* Выпадающие списки (select и option) для темной темы */
+    select {
+      background-color: #16161c !important;
+      color: #ffffff !important;
+      color-scheme: dark;
+    }
+    option {
+      background-color: #16161c !important;
+      color: #ffffff !important;
+    }
+    option:hover, option:checked, option:focus {
+      background-color: #22d3ee !important;
+      color: #000000 !important;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col p-4 md:p-6 text-xs antialiased selection:bg-brand/30 selection:text-brand">
+
+  <!-- ─── HEADER ──────────────────────────────────────────────────────── -->
+  <header class="flex flex-wrap items-center justify-between gap-4 pb-5 border-b border-darkBorder mb-6">
+    <div class="flex items-center gap-3">
+      <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-brand/15 border border-brand/30 text-brand shadow-[0_0_15px_rgba(34,211,238,0.2)]">
+        <i data-lucide="activity" class="h-5 w-5"></i>
+      </div>
+      <div>
+        <div class="flex items-center gap-2">
+          <h1 class="text-sm font-bold text-white tracking-wide">API Activity & Cost Monitor</h1>
+          <span class="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
+            <span class="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            Live
+          </span>
+        </div>
+        <p class="text-[11px] text-white/40">Мониторинг расходов, токенов и задержек API-ключей</p>
+      </div>
+    </div>
+
+    <!-- Actions & Filter -->
+    <div class="flex flex-wrap items-center gap-2">
+      <!-- Период -->
+      <div class="flex rounded-xl bg-white/[0.04] p-1 border border-darkBorder">
+        <button onclick="setPeriod('today')" id="btn-today" class="period-btn px-2.5 py-1 rounded-lg text-[11px] font-medium transition bg-brand text-black font-bold">Сегодня</button>
+        <button onclick="setPeriod('7d')" id="btn-7d" class="period-btn px-2.5 py-1 rounded-lg text-[11px] font-medium text-white/60 hover:text-white transition">7 дней</button>
+        <button onclick="setPeriod('30d')" id="btn-30d" class="period-btn px-2.5 py-1 rounded-lg text-[11px] font-medium text-white/60 hover:text-white transition">Месяц</button>
+        <button onclick="setPeriod('all')" id="btn-all" class="period-btn px-2.5 py-1 rounded-lg text-[11px] font-medium text-white/60 hover:text-white transition">Всё</button>
+      </div>
+
+      <!-- Кнопка обновления -->
+      <button onclick="fetchData()" class="flex items-center gap-1.5 rounded-xl border border-darkBorder bg-white/[0.04] hover:bg-white/[0.08] px-3 py-1.5 text-[11px] font-medium text-white transition outline-none" title="Обновить данные">
+        <i data-lucide="rotate-ccw" class="h-3.5 w-3.5 text-brand" id="refresh-icon"></i>
+        <span>Обновить</span>
+      </button>
+
+      <!-- Экспорт -->
+      <div class="flex items-center gap-1">
+        <a href="/api/export/excel" class="flex items-center gap-1.5 rounded-xl border border-brand/30 bg-brand/10 hover:bg-brand/20 px-3 py-1.5 text-[11px] font-semibold text-brand transition shadow-sm outline-none" title="Скачать отчёт в Excel">
+          <i data-lucide="file-spreadsheet" class="h-3.5 w-3.5"></i>
+          <span>Excel (.xlsx)</span>
+        </a>
+        <a href="/api/export/csv" class="flex items-center gap-1.5 rounded-xl border border-darkBorder bg-white/[0.04] hover:bg-white/[0.08] px-3 py-1.5 text-[11px] font-medium text-white/80 transition outline-none" title="Скачать CSV">
+          <i data-lucide="download" class="h-3.5 w-3.5"></i>
+          <span>CSV</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- ─── METRIC CARDS ────────────────────────────────────────────────── -->
+  <section class="grid grid-cols-2 md:grid-cols-4 gap-3.5 mb-6">
+    <!-- Card 1: Расход -->
+    <div class="flex flex-col p-4 rounded-2xl bg-darkCard border border-darkBorder shadow-sm relative overflow-hidden group hover:border-brand/40 transition-colors">
+      <div class="flex items-center justify-between text-white/40 mb-2">
+        <span class="text-[11px] font-medium">Общий расход</span>
+        <i data-lucide="dollar-sign" class="h-4 w-4 text-brand"></i>
+      </div>
+      <div class="text-xl md:text-2xl font-black text-white font-mono tracking-tight" id="metric-cost">$0.0000</div>
+      <span class="text-[10px] text-white/40 mt-1" id="cost-subtitle">за выбранный период</span>
+      <div class="absolute -right-4 -bottom-4 w-16 h-16 bg-brand/5 rounded-full blur-xl group-hover:bg-brand/15 transition-all"></div>
+    </div>
+
+    <!-- Card 2: Вызовы -->
+    <div class="flex flex-col p-4 rounded-2xl bg-darkCard border border-darkBorder shadow-sm relative overflow-hidden group hover:border-brand/40 transition-colors">
+      <div class="flex items-center justify-between text-white/40 mb-2">
+        <span class="text-[11px] font-medium">Всего запросов</span>
+        <i data-lucide="send" class="h-4 w-4 text-emerald-400"></i>
+      </div>
+      <div class="text-xl md:text-2xl font-black text-white font-mono tracking-tight" id="metric-calls">0</div>
+      <span class="text-[10px] text-emerald-400/80 mt-1" id="calls-subtitle">100% успешно</span>
+    </div>
+
+    <!-- Card 3: Токены -->
+    <div class="flex flex-col p-4 rounded-2xl bg-darkCard border border-darkBorder shadow-sm relative overflow-hidden group hover:border-brand/40 transition-colors">
+      <div class="flex items-center justify-between text-white/40 mb-2">
+        <span class="text-[11px] font-medium">Потрачено токенов</span>
+        <i data-lucide="cpu" class="h-4 w-4 text-purple-400"></i>
+      </div>
+      <div class="text-xl md:text-2xl font-black text-white font-mono tracking-tight" id="metric-tokens">0</div>
+      <span class="text-[10px] text-white/40 mt-1">Prompt + Completion</span>
+    </div>
+
+    <!-- Card 4: Скорость -->
+    <div class="flex flex-col p-4 rounded-2xl bg-darkCard border border-darkBorder shadow-sm relative overflow-hidden group hover:border-brand/40 transition-colors">
+      <div class="flex items-center justify-between text-white/40 mb-2">
+        <span class="text-[11px] font-medium">Средний Latency</span>
+        <i data-lucide="timer" class="h-4 w-4 text-amber-400"></i>
+      </div>
+      <div class="text-xl md:text-2xl font-black text-white font-mono tracking-tight" id="metric-latency">0.0 сек</div>
+      <span class="text-[10px] text-white/40 mt-1">время отклика моделей</span>
+    </div>
+  </section>
+
+  <!-- ─── CHARTS ──────────────────────────────────────────────────────── -->
+  <section class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+    <!-- Area Chart: Динамика расходов -->
+    <div class="lg:col-span-2 p-4 rounded-2xl bg-darkCard border border-darkBorder flex flex-col">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <i data-lucide="bar-chart-3" class="h-4 w-4 text-brand"></i>
+          <h3 class="font-bold text-white text-xs">Динамика расходов ($)</h3>
+        </div>
+        <span class="text-[10px] text-white/40" id="timeline-chart-subtitle">по дням</span>
+      </div>
+      <div class="flex-1 min-h-[220px] max-h-[240px] relative">
+        <canvas id="timelineChart"></canvas>
+      </div>
+    </div>
+
+    <!-- Doughnut Chart: Доли моделей -->
+    <div class="p-4 rounded-2xl bg-darkCard border border-darkBorder flex flex-col">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <i data-lucide="pie-chart" class="h-4 w-4 text-purple-400"></i>
+          <h3 class="font-bold text-white text-xs">Расходы по моделям</h3>
+        </div>
+        <span class="text-[10px] text-white/40">топ затрат</span>
+      </div>
+      <div class="flex-1 min-h-[220px] max-h-[240px] relative flex items-center justify-center">
+        <canvas id="modelPieChart"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── LOGS TABLE ─────────────────────────────────────────────────── -->
+  <section class="flex-1 flex flex-col rounded-2xl bg-darkCard border border-darkBorder overflow-hidden">
+    <!-- Table Toolbar -->
+    <div class="flex flex-wrap items-center justify-between gap-3 p-3.5 border-b border-darkBorder bg-white/[0.01]">
+      <div class="flex items-center gap-2">
+        <i data-lucide="list" class="h-4 w-4 text-brand"></i>
+        <h3 class="font-bold text-white text-xs">Журнал запросов API</h3>
+        <span class="rounded-full bg-white/[0.08] px-2 py-0.5 text-[10px] font-mono text-white/60" id="table-total-badge">0</span>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2">
+        <!-- Поиск -->
+        <div class="relative w-48 sm:w-64">
+          <i data-lucide="search" class="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-white/40"></i>
+          <input
+            type="text"
+            id="search-input"
+            oninput="handleSearch()"
+            placeholder="Поиск по модели, ошибке..."
+            class="w-full h-8 pl-8 pr-3 rounded-xl border border-darkBorder bg-white/[0.04] text-xs text-white placeholder:text-white/30 focus:border-brand/60 focus:outline-none outline-none"
+          />
+        </div>
+
+        <!-- Фильтр типа вызова -->
+        <select id="type-filter" onchange="fetchLogs()" class="h-8 px-2.5 rounded-xl border border-darkBorder bg-[#16161c] text-xs text-white font-medium focus:border-brand/60 outline-none cursor-pointer">
+          <option value="" class="bg-[#16161c] text-white">Все типы</option>
+          <option value="image" class="bg-[#16161c] text-pink-400">Изображения</option>
+          <option value="text" class="bg-[#16161c] text-cyan-400">Текст (LLM)</option>
+          <option value="video" class="bg-[#16161c] text-purple-400">Видео</option>
+          <option value="audio" class="bg-[#16161c] text-amber-400">Аудио</option>
+        </select>
+
+        <!-- Фильтр статуса -->
+        <select id="status-filter" onchange="fetchLogs()" class="h-8 px-2.5 rounded-xl border border-darkBorder bg-[#16161c] text-xs text-white font-medium focus:border-brand/60 outline-none cursor-pointer">
+          <option value="" class="bg-[#16161c] text-white">Все статусы</option>
+          <option value="ok" class="bg-[#16161c] text-emerald-400">Только успешные (200)</option>
+          <option value="error" class="bg-[#16161c] text-red-400">Ошибки (4xx/5xx)</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Table Container -->
+    <div class="flex-1 overflow-auto max-h-[460px]">
+      <table class="w-full text-left border-collapse">
+        <thead class="sticky top-0 bg-[#16161c] border-b border-darkBorder text-[11px] text-white/50 font-semibold uppercase tracking-wider">
+          <tr>
+            <th class="py-2.5 px-3.5">Время (МСК)</th>
+            <th class="py-2.5 px-3">Провайдер</th>
+            <th class="py-2.5 px-3">Модель</th>
+            <th class="py-2.5 px-3">Тип</th>
+            <th class="py-2.5 px-3 text-right">Токены</th>
+            <th class="py-2.5 px-3 text-right">Latency</th>
+            <th class="py-2.5 px-3 text-right">Стоимость</th>
+            <th class="py-2.5 px-3 text-center">Статус</th>
+          </tr>
+        </thead>
+        <tbody id="logs-tbody" class="divide-y divide-darkBorder text-[11px]">
+          <tr>
+            <td colspan="8" class="text-center py-12 text-white/30 italic">Загрузка данных...</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ─── JAVASCRIPT LOGIC ────────────────────────────────────────────── -->
+  <script>
+    let currentPeriod = 'today';
+    let timelineChart = null;
+    let modelPieChart = null;
+    let searchDebounce = null;
+
+    function getPeriodRange(period) {
+      const now = new Date();
+      if (period === 'today') {
+        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+        return { from: start, to: null };
+      }
+      if (period === '7d') {
+        const start = new Date(now.getTime() - 7 * 24 * 3600 * 1000).toISOString();
+        return { from: start, to: null };
+      }
+      if (period === '30d') {
+        const start = new Date(now.getTime() - 30 * 24 * 3600 * 1000).toISOString();
+        return { from: start, to: null };
+      }
+      return { from: null, to: null };
+    }
+
+    function setPeriod(period) {
+      currentPeriod = period;
+      document.querySelectorAll('.period-btn').forEach(btn => {
+        btn.classList.remove('bg-brand', 'text-black', 'font-bold');
+        btn.classList.add('text-white/60');
+      });
+      const activeBtn = document.getElementById(`btn-${period}`);
+      if (activeBtn) {
+        activeBtn.classList.remove('text-white/60');
+        activeBtn.classList.add('bg-brand', 'text-black', 'font-bold');
+      }
+      fetchData();
+    }
+
+    async function fetchData() {
+      const icon = document.getElementById('refresh-icon');
+      if (icon) icon.classList.add('animate-spin');
+      try {
+        await Promise.all([fetchStats(), fetchLogs()]);
+      } finally {
+        if (icon) icon.classList.remove('animate-spin');
+      }
+    }
+
+    async function fetchStats() {
+      const { from } = getPeriodRange(currentPeriod);
+      const url = from ? `/api/stats?date_from=${encodeURIComponent(from)}` : '/api/stats';
+      const r = await fetch(url);
+      if (!r.ok) return;
+      const data = await r.json();
+
+      document.getElementById('metric-cost').textContent = `$${data.total_cost.toFixed(4)}`;
+      document.getElementById('metric-calls').textContent = data.total_calls.toLocaleString();
+      document.getElementById('metric-tokens').textContent = data.total_tokens.toLocaleString();
+      document.getElementById('metric-latency').textContent = `${data.avg_latency.toFixed(2)} сек`;
+
+      const errs = data.total_errors || 0;
+      const callSub = document.getElementById('calls-subtitle');
+      if (errs > 0) {
+        callSub.textContent = `${errs} ошибок (${((errs / data.total_calls) * 100).toFixed(1)}%)`;
+        callSub.className = 'text-[10px] text-red-400 mt-1';
+      } else {
+        callSub.textContent = '100% успешно';
+        callSub.className = 'text-[10px] text-emerald-400 mt-1';
+      }
+
+      const timeUnit = data.time_unit || 'day';
+      const sub = document.getElementById('timeline-chart-subtitle');
+      if (sub) {
+        sub.textContent = timeUnit === 'hour' ? 'по часам (МСК)' : 'по дням';
+      }
+
+      renderTimelineChart(data.daily || [], timeUnit);
+      renderModelPieChart(data.models || []);
+    }
+
+    function renderTimelineChart(daily, timeUnit) {
+      const ctx = document.getElementById('timelineChart').getContext('2d');
+      const labels = daily.map(d => {
+        if (!d.day) return '';
+        if (d.day.length === 10 && d.day.includes('-')) return d.day.slice(5);
+        return d.day;
+      });
+      const costs = daily.map(d => d.cost_usd);
+
+      if (timelineChart) timelineChart.destroy();
+
+      timelineChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels.length ? labels : ['Нет данных'],
+          datasets: [{
+            label: 'Расход ($)',
+            data: costs.length ? costs : [0],
+            borderColor: '#22d3ee',
+            backgroundColor: 'rgba(34, 211, 238, 0.08)',
+            fill: true,
+            tension: 0.35,
+            borderWidth: 2,
+            pointBackgroundColor: '#22d3ee',
+            pointRadius: 4,
+            pointHoverRadius: 6,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => `Расход: $${ctx.raw.toFixed(4)}`
+              }
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: 'rgba(255, 255, 255, 0.04)' },
+              ticks: { color: 'rgba(255, 255, 255, 0.4)', font: { size: 10 } }
+            },
+            y: {
+              beginAtZero: true,
+              suggestedMax: 0.05,
+              grid: { color: 'rgba(255, 255, 255, 0.04)' },
+              ticks: {
+                color: 'rgba(255, 255, 255, 0.4)',
+                font: { size: 10 },
+                callback: function(v) {
+                  if (v === 0) return '$0.00';
+                  if (v < 0.01) return `$${v.toFixed(3)}`;
+                  return `$${v.toFixed(2)}`;
+                }
+              }
+            }
+          }
+        }
+      });
+    }
+
+    function renderModelPieChart(models) {
+      const ctx = document.getElementById('modelPieChart').getContext('2d');
+      const top = models.slice(0, 5);
+      const labels = top.map(m => m.model);
+      const costs = top.map(m => m.cost_usd);
+
+      if (modelPieChart) modelPieChart.destroy();
+
+      if (!costs.length || costs.every(c => c === 0)) {
+        modelPieChart = new Chart(ctx, {
+          type: 'doughnut',
+          data: {
+            labels: ['Нет расходов'],
+            datasets: [{ data: [1], backgroundColor: ['rgba(255,255,255,0.08)'] }]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+        });
+        return;
+      }
+
+      modelPieChart = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+          labels: labels,
+          datasets: [{
+            data: costs,
+            backgroundColor: [
+              '#22d3ee', '#38bdf8', '#818cf8', '#c084fc', '#f472b6'
+            ],
+            borderWidth: 0,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              position: 'bottom',
+              labels: { color: 'rgba(255, 255, 255, 0.7)', font: { size: 10 }, boxWidth: 10 }
+            },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => `${ctx.label}: $${ctx.raw.toFixed(4)}`
+              }
+            }
+          }
+        }
+      });
+    }
+
+    function formatMskTime(isoStr) {
+      if (!isoStr) return '—';
+      try {
+        let str = isoStr;
+        if (!str.endsWith('Z') && !str.includes('+') && !str.includes('-', 10)) {
+          str += 'Z';
+        }
+        const d = new Date(str);
+        if (isNaN(d.getTime())) return isoStr.replace('T', ' ').slice(5, 19);
+
+        return d.toLocaleString('ru-RU', {
+          timeZone: 'Europe/Moscow',
+          day: '2-digit',
+          month: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false
+        }).replace(',', '');
+      } catch (e) {
+        return isoStr.replace('T', ' ').slice(5, 19);
+      }
+    }
+
+    async function fetchLogs() {
+      const { from } = getPeriodRange(currentPeriod);
+      const search = document.getElementById('search-input').value.trim();
+      const status = document.getElementById('status-filter').value;
+      const callType = document.getElementById('type-filter') ? document.getElementById('type-filter').value : '';
+
+      const params = new URLSearchParams({ limit: '100', offset: '0' });
+      if (from) params.append('date_from', from);
+      if (search) params.append('search', search);
+      if (status) params.append('status', status);
+      if (callType) params.append('call_type', callType);
+
+      const r = await fetch(`/api/logs?${params.toString()}`);
+      if (!r.ok) return;
+      const data = await r.json();
+
+      document.getElementById('table-total-badge').textContent = data.total;
+      const tbody = document.getElementById('logs-tbody');
+
+      if (!data.items.length) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="8" class="text-center py-12 text-white/30 italic">
+              Нет записей активности за выбранный период
+            </td>
+          </tr>
+        `;
+        return;
+      }
+
+      tbody.innerHTML = data.items.map(row => {
+        const isOk = row.status_code >= 200 && row.status_code < 300;
+        const timeStr = formatMskTime(row.timestamp);
+        const provBadge = getProviderBadge(row.provider);
+        const typeBadge = getCallTypeBadge(row.call_type);
+
+        return `
+          <tr class="hover:bg-white/[0.02] transition-colors">
+            <td class="py-2 px-3.5 font-mono text-white/50">${timeStr}</td>
+            <td class="py-2 px-3">${provBadge}</td>
+            <td class="py-2 px-3 font-semibold text-white truncate max-w-[180px]" title="${row.model}">${row.model}</td>
+            <td class="py-2 px-3">${typeBadge}</td>
+            <td class="py-2 px-3 text-right font-mono text-white/80">${row.total_tokens ? row.total_tokens.toLocaleString() : '-'}</td>
+            <td class="py-2 px-3 text-right font-mono text-white/60">${row.duration_sec ? row.duration_sec.toFixed(2) + 's' : '-'}</td>
+            <td class="py-2 px-3 text-right font-mono font-semibold text-brand">$${row.cost_usd.toFixed(4)}</td>
+            <td class="py-2 px-3 text-center">
+              <span class="inline-block px-1.5 py-0.5 rounded font-mono text-[10px] font-bold ${isOk ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/10 text-red-400 border border-red-500/30'}">
+                ${row.status_code}
+              </span>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function getCallTypeBadge(type) {
+      const t = (type || 'text').toLowerCase();
+      if (t === 'image') return '<span class="px-1.5 py-0.5 rounded bg-pink-500/15 text-pink-300 border border-pink-500/30 text-[9px] font-bold tracking-wider">IMAGE</span>';
+      if (t === 'video') return '<span class="px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30 text-[9px] font-bold tracking-wider">VIDEO</span>';
+      if (t === 'audio') return '<span class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[9px] font-bold tracking-wider">AUDIO</span>';
+      return '<span class="px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 text-[9px] font-bold tracking-wider">TEXT</span>';
+    }
+
+    function getProviderBadge(prov) {
+      const p = (prov || '').toLowerCase();
+      if (p.includes('vibecode')) return '<span class="text-purple-300 font-medium">Vibecode</span>';
+      if (p.includes('google') || p.includes('gemini')) return '<span class="text-cyan-300 font-medium">Google</span>';
+      if (p.includes('openai')) return '<span class="text-emerald-300 font-medium">OpenAI</span>';
+      if (p.includes('kling')) return '<span class="text-amber-300 font-medium">Kling</span>';
+      if (p.includes('kie')) return '<span class="text-sky-300 font-medium">Kie.ai</span>';
+      if (p.includes('outsee')) return '<span class="text-pink-300 font-medium">Outsee</span>';
+      if (p.includes('black forest') || p.includes('flux')) return '<span class="text-indigo-300 font-medium">Black Forest</span>';
+      if (p.includes('bytedance') || p.includes('seedream') || p.includes('seedance')) return '<span class="text-blue-300 font-medium">ByteDance</span>';
+      if (p.includes('elevenlabs')) return '<span class="text-orange-300 font-medium">ElevenLabs</span>';
+      return `<span class="text-white/60">${prov}</span>`;
+    }
+
+    function handleSearch() {
+      clearTimeout(searchDebounce);
+      searchDebounce = setTimeout(fetchLogs, 300);
+    }
+
+    // Инициализация
+    window.addEventListener('DOMContentLoaded', () => {
+      lucide.createIcons();
+      fetchData();
+      // Автообновление каждые 6 секунд
+      setInterval(fetchData, 6000);
+    });
+  </script>
+</body>
+</html>
