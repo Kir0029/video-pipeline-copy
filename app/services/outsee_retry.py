@@ -1671,6 +1671,22 @@ async def generate_video_with_retries(
         model_fallback=KIE_KLING_FALLBACK_SLUG,
     )
     detail = str(last_err.reason if isinstance(last_err, OutseeImageError) else last_err)
+    try:
+        from app.services.api_tracker_hook import record_api_call
+        record_api_call(
+            provider="kling" if fallback_burns > 0 else "outsee",
+            model=KIE_KLING_FALLBACK_SLUG if fallback_burns > 0 else primary_slug,
+            call_type="video",
+            media_count=1,
+            duration_sec=0.0,
+            cost_usd=0.0,
+            status_code=500,
+            error_message=f"Video ladder exhausted: {detail[:250]}",
+            project_source="video_ladder",
+            metadata={"primary_burns": primary_burns, "fallback_burns": fallback_burns},
+        )
+    except Exception:
+        pass
     raise VideoLadderExhaustedError(
         f"video ladder exhausted: {summary}; last={detail[:240]}",
         context={

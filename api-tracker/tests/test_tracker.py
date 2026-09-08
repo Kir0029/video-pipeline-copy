@@ -210,7 +210,7 @@ def test_api_endpoints(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     wb = openpyxl.load_workbook(io.BytesIO(res.content))
     ws = wb.active
     assert ws.title == "Активность API"
-    assert ws.cell(row=2, column=4).value == "gemini-3.7-flash"
+    assert ws.cell(row=2, column=6).value == "gemini-3.7-flash"
 
 
 # ─── 4. ТЕСТ КЛИЕНТА (CLIENT TRACK_API_CALL) ───────────────────────────
@@ -235,3 +235,79 @@ def test_client_track_call_thread(tmp_path: Path):
     assert total == 1
     assert logs[0]["model"] == "gemini-3.7-flash"
     assert logs[0]["total_tokens"] == 2000
+
+
+# ─── 5. ТЕСТЫ ИДЕНТИФИКАЦИИ И ОБЛАЧНОЙ ФИЛЬТРАЦИИ ───────────────────────
+
+def test_user_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from app.identity import get_user_identity, load_user_profile, save_user_profile
+    monkeypatch.setattr("app.identity.get_appdata_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.identity.BASE_DIR", tmp_path)
+
+    # До сохранения профиля
+    u, d, is_cfg = get_user_identity()
+    assert len(u) > 0
+    assert not is_cfg
+
+    # Сохраняем имя
+    res = save_user_profile("Алина (Тестировщик)")
+    assert res["user_name"] == "Алина (Тестировщик)"
+    assert res["is_configured"] is True
+
+    # Проверяем повторное чтение
+    u2, d2, is_cfg2 = get_user_identity()
+    assert u2 == "Алина (Тестировщик)"
+    assert is_cfg2 is True
+
+
+def test_db_user_filter(tmp_path: Path):
+    db_file = tmp_path / "user_filter_test.db"
+    init_db(db_file)
+
+    insert_call(provider="OpenAI", model="gpt-4o", cost_usd=0.05, user_name="Алина", db_path=db_file)
+    insert_call(provider="Google", model="gemini-3.7-flash", cost_usd=0.01, user_name="Лера", db_path=db_file)
+    insert_call(provider="Kie.ai", model="Flux 2 Pro", cost_usd=0.025, user_name="Алина", db_path=db_file)
+
+    # 1. Логи по Алине
+    logs_alina, cnt_alina = get_logs(user_name="Алина", db_path=db_file)
+    assert cnt_alina == 2
+    assert all(l["user_name"] == "Алина" for l in logs_alina)
+
+    # 2. Логи по Лере
+    logs_lera, cnt_lera = get_logs(user_name="Лера", db_path=db_file)
+    assert cnt_lera == 1
+    assert logs_lera[0]["model"] == "gemini-3.7-flash"
+
+    # 3. Статистика по пользователю
+    stats_alina = get_stats(user_name="Алина", db_path=db_file)
+    assert stats_alina["total_calls"] == 2
+    assert stats_alina["total_cost"] == 0.075
+
+
+def test_api_profile_and_users(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    db_file = tmp_path / "server_user_test.db"
+    monkeypatch.setattr("app.db.DEFAULT_DB_PATH", db_file)
+    monkeypatch.setattr("app.identity.get_appdata_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.identity.BASE_DIR", tmp_path)
+    init_db(db_file)
+
+    insert_call(provider="OpenAI", model="gpt-4o", cost_usd=0.01, user_name="Владелец", db_path=db_file)
+
+    client = TestClient(app)
+
+    # Сохранение имени через API
+    post_res = client.post("/api/user-profile", json={"user_name": "Тестировщик-1"})
+    assert post_res.status_code == 200
+    assert post_res.json()["user_name"] == "Тестировщик-1"
+
+    # Чтение профиля
+    get_res = client.get("/api/user-profile")
+    assert get_res.status_code == 200
+    assert get_res.json()["user_name"] == "Тестировщик-1"
+
+    # Список пользователей
+    users_res = client.get("/api/users")
+    assert users_res.status_code == 200
+    users = users_res.json()["users"]
+    assert "Владелец" in users or len(users) > 0
+

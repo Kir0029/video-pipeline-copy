@@ -41,7 +41,12 @@ data/
 browser_profile/
 scratch/
 *.db
+*.db-shm
+*.db-wal
+*.spec
 api-tracker/*.db
+api-tracker/*.db-shm
+api-tracker/*.db-wal
 
 # OS
 .DS_Store

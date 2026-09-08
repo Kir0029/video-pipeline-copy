@@ -53,6 +53,10 @@ def build():
         "uvicorn.lifespan.on",
         "--hidden-import",
         "uvicorn.lifespan.off",
+        "--hidden-import",
+        "httpx",
+        "--hidden-import",
+        "httpcore",
         str(BASE_DIR / "main.py"),
     ]
 

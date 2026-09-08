@@ -61,6 +61,8 @@ def init_db(db_path: Path | str | None = None) -> None:
             CREATE TABLE IF NOT EXISTS api_calls (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL,
+                user_name TEXT NOT NULL DEFAULT 'unknown',
+                device_name TEXT DEFAULT '',
                 provider TEXT NOT NULL,
                 key_alias TEXT DEFAULT '',
                 model TEXT NOT NULL,
@@ -75,12 +77,26 @@ def init_db(db_path: Path | str | None = None) -> None:
                 status_code INTEGER DEFAULT 200,
                 error_message TEXT DEFAULT '',
                 project_source TEXT DEFAULT '',
-                metadata_json TEXT DEFAULT '{}'
+                metadata_json TEXT DEFAULT '{}',
+                synced INTEGER DEFAULT 1
             );
         """)
+        # Автомиграция существующих баз данных
+        cols = [c["name"] for c in conn.execute("PRAGMA table_info(api_calls);").fetchall()]
+        if "user_name" not in cols:
+            conn.execute("ALTER TABLE api_calls ADD COLUMN user_name TEXT DEFAULT 'unknown';")
+        if "device_name" not in cols:
+            conn.execute("ALTER TABLE api_calls ADD COLUMN device_name TEXT DEFAULT '';")
+        if "synced" not in cols:
+            conn.execute("ALTER TABLE api_calls ADD COLUMN synced INTEGER DEFAULT 1;")
+
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_api_calls_ts
             ON api_calls(timestamp DESC);
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_api_calls_user
+            ON api_calls(user_name);
         """)
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_api_calls_provider_model
@@ -100,6 +116,9 @@ def insert_call(
     provider: str,
     model: str,
     cost_usd: float,
+    user_name: str = "unknown",
+    device_name: str = "",
+    synced: int = 1,
     key_alias: str = "",
     call_type: str = "text",
     prompt_tokens: int = 0,
@@ -123,14 +142,16 @@ def insert_call(
         cur = conn.execute(
             """
             INSERT INTO api_calls (
-                timestamp, provider, key_alias, model, call_type,
+                timestamp, user_name, device_name, provider, key_alias, model, call_type,
                 prompt_tokens, completion_tokens, cached_tokens, total_tokens,
                 media_count, duration_sec, cost_usd, status_code,
-                error_message, project_source, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                error_message, project_source, metadata_json, synced
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
+                user_name,
+                device_name,
                 provider,
                 key_alias,
                 model,
@@ -146,6 +167,7 @@ def insert_call(
                 error_message,
                 project_source,
                 meta_str,
+                synced,
             ),
         )
         return cur.lastrowid or 0
@@ -155,6 +177,7 @@ def get_logs(
     *,
     limit: int = 100,
     offset: int = 0,
+    user_name: str | None = None,
     provider: str | None = None,
     model: str | None = None,
     call_type: str | None = None,
@@ -168,6 +191,11 @@ def get_logs(
     query = ["SELECT * FROM api_calls WHERE 1=1"]
     count_query = ["SELECT COUNT(*) as cnt FROM api_calls WHERE 1=1"]
     params: list[Any] = []
+
+    if user_name and user_name != "all":
+        query.append("AND user_name = ?")
+        count_query.append("AND user_name = ?")
+        params.append(user_name)
 
     if provider:
         query.append("AND LOWER(provider) = LOWER(?)")
@@ -203,9 +231,9 @@ def get_logs(
 
     if search:
         s = f"%{search}%"
-        query.append("AND (model LIKE ? OR provider LIKE ? OR error_message LIKE ? OR project_source LIKE ?)")
-        count_query.append("AND (model LIKE ? OR provider LIKE ? OR error_message LIKE ? OR project_source LIKE ?)")
-        params.extend([s, s, s, s])
+        query.append("AND (model LIKE ? OR provider LIKE ? OR user_name LIKE ? OR error_message LIKE ? OR project_source LIKE ?)")
+        count_query.append("AND (model LIKE ? OR provider LIKE ? OR user_name LIKE ? OR error_message LIKE ? OR project_source LIKE ?)")
+        params.extend([s, s, s, s, s])
 
     # Подсчёт общего числа записей
     with get_connection(db_path) as conn:
@@ -219,6 +247,7 @@ def get_logs(
 
 def get_stats(
     *,
+    user_name: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
     db_path: Path | str | None = None,
@@ -227,6 +256,9 @@ def get_stats(
     where = ["WHERE 1=1"]
     params: list[Any] = []
 
+    if user_name and user_name != "all":
+        where.append("AND user_name = ?")
+        params.append(user_name)
     if date_from:
         where.append("AND timestamp >= ?")
         params.append(date_from)
@@ -362,3 +394,31 @@ def get_stats(
             for p in providers
         ],
     }
+
+
+def get_unsynced_calls(limit: int = 100, db_path: Path | str | None = None) -> list[dict[str, Any]]:
+    """Получить локальные записи, которые еще не были отправлены в Supabase."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM api_calls WHERE synced = 0 ORDER BY id ASC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def mark_calls_synced(call_ids: list[int], db_path: Path | str | None = None) -> None:
+    """Пометить записи как успешно отправленные в Supabase."""
+    if not call_ids:
+        return
+    with get_connection(db_path) as conn:
+        placeholders = ",".join("?" for _ in call_ids)
+        conn.execute(f"UPDATE api_calls SET synced = 1 WHERE id IN ({placeholders})", call_ids)
+
+
+def get_local_distinct_users(db_path: Path | str | None = None) -> list[str]:
+    """Список уникальных пользователей из локальной базы."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT user_name FROM api_calls WHERE user_name != '' AND user_name != 'unknown' ORDER BY user_name ASC"
+        ).fetchall()
+        return [r["user_name"] for r in rows]
+

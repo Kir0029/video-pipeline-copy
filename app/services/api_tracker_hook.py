@@ -47,6 +47,8 @@ _MEDIA_RATES: dict[str, float] = {
     "wan": 0.05,
     "hailuo": 0.09,
     "suno": 0.05,
+    "elevenlabs": 0.01,
+    "sound-generation": 0.01,
 }
 
 
@@ -77,6 +79,52 @@ def _calc_cost(
     return round((p_tok / 1e6) * 0.50 + (c_tok / 1e6) * 2.00, 6)
 
 
+def _get_identity() -> tuple[str, str]:
+    """Определить имя пользователя и ПК из сохранённого профиля или системы."""
+    import getpass
+    import os
+    import socket
+    try:
+        app_data = os.environ.get("APPDATA")
+        candidates = []
+        if app_data:
+            candidates.append(Path(app_data) / "API-Tracker" / "user_profile.json")
+        candidates.append(_TRACKER_DB.parent / "user_profile.json")
+        for p in candidates:
+            if p.is_file():
+                d = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(d, dict) and d.get("user_name"):
+                    return str(d["user_name"]).strip(), str(d.get("device_name", "")).strip()
+    except Exception:
+        pass
+    u = os.environ.get("USERNAME") or os.environ.get("USER") or getpass.getuser() or "Пользователь"
+    h = socket.gethostname() or "Desktop"
+    return u, h
+
+
+def _push_to_supabase(payload: dict[str, Any]) -> bool:
+    """Асинхронная отправка записи в Supabase."""
+    import os
+    import httpx
+    url = os.environ.get("SUPABASE_URL", "").strip() or "https://jubhhajwknvhlntmwpoj.supabase.co"
+    key = os.environ.get("SUPABASE_KEY", "").strip() or os.environ.get("SUPABASE_ANON_KEY", "").strip() or "sb_publishable_qxcebL4M8lXRj0s2qF4ZLA_VkHhp3a-"
+    if not url or not key:
+        return False
+    endpoint = f"{url.rstrip('/')}/rest/v1/api_calls"
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            r = client.post(endpoint, headers=headers, json=payload)
+            return r.status_code in (200, 201)
+    except Exception:
+        return False
+
+
 def record_api_call(
     *,
     provider: str,
@@ -94,7 +142,7 @@ def record_api_call(
     metadata: dict[str, Any] | None = None,
     timestamp: str | None = None,
 ) -> None:
-    """Асинхронная запись вызова API в базу трекера."""
+    """Асинхронная запись вызова API в базу трекера и облако Supabase."""
     def _write():
         try:
             _TRACKER_DB.parent.mkdir(parents=True, exist_ok=True)
@@ -109,7 +157,8 @@ def record_api_call(
             )
             total_tok = prompt_tokens + completion_tokens
             ts = timestamp or datetime.now(timezone.utc).isoformat()
-            meta_json = json.dumps(metadata or {}, ensure_ascii=False)
+            meta_dict = metadata or {}
+            meta_json = json.dumps(meta_dict, ensure_ascii=False)
 
             clean_prov = provider or "unknown"
             p_lower = clean_prov.lower()
@@ -121,13 +170,43 @@ def record_api_call(
                 clean_prov = "Google"
             elif p_lower == "openai":
                 clean_prov = "OpenAI"
+            elif "eleven" in p_lower:
+                clean_prov = "ElevenLabs"
 
+            u_name, d_name = _get_identity()
+
+            # 1. Отправка в облако Supabase
+            cloud_payload = {
+                "timestamp": ts,
+                "user_name": u_name,
+                "device_name": d_name,
+                "provider": clean_prov,
+                "key_alias": "",
+                "model": model,
+                "call_type": call_type,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "cached_tokens": cached_tokens,
+                "total_tokens": total_tok,
+                "media_count": media_count,
+                "duration_sec": round(duration_sec, 3),
+                "cost_usd": cost,
+                "status_code": status_code,
+                "error_message": error_message,
+                "project_source": project_source,
+                "metadata_json": meta_dict,
+            }
+            is_synced = _push_to_supabase(cloud_payload)
+
+            # 2. Локальная запись в SQLite
             with sqlite3.connect(str(_TRACKER_DB), timeout=5.0) as conn:
                 conn.execute("PRAGMA journal_mode=WAL;")
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS api_calls (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         timestamp TEXT NOT NULL,
+                        user_name TEXT NOT NULL DEFAULT 'unknown',
+                        device_name TEXT DEFAULT '',
                         provider TEXT NOT NULL,
                         key_alias TEXT DEFAULT '',
                         model TEXT NOT NULL,
@@ -142,20 +221,32 @@ def record_api_call(
                         status_code INTEGER DEFAULT 200,
                         error_message TEXT DEFAULT '',
                         project_source TEXT DEFAULT '',
-                        metadata_json TEXT DEFAULT '{}'
+                        metadata_json TEXT DEFAULT '{}',
+                        synced INTEGER DEFAULT 1
                     );
                 """)
+                # Автомиграция для старых баз
+                cols = [c[1] for c in conn.execute("PRAGMA table_info(api_calls);").fetchall()]
+                if "user_name" not in cols:
+                    conn.execute("ALTER TABLE api_calls ADD COLUMN user_name TEXT DEFAULT 'unknown';")
+                if "device_name" not in cols:
+                    conn.execute("ALTER TABLE api_calls ADD COLUMN device_name TEXT DEFAULT '';")
+                if "synced" not in cols:
+                    conn.execute("ALTER TABLE api_calls ADD COLUMN synced INTEGER DEFAULT 1;")
+
                 conn.execute(
                     """
                     INSERT INTO api_calls (
-                        timestamp, provider, key_alias, model, call_type,
+                        timestamp, user_name, device_name, provider, key_alias, model, call_type,
                         prompt_tokens, completion_tokens, cached_tokens, total_tokens,
                         media_count, duration_sec, cost_usd, status_code,
-                        error_message, project_source, metadata_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        error_message, project_source, metadata_json, synced
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         ts,
+                        u_name,
+                        d_name,
                         clean_prov,
                         "",
                         model,
@@ -171,6 +262,7 @@ def record_api_call(
                         error_message,
                         project_source,
                         meta_json,
+                        1 if is_synced else 0,
                     ),
                 )
         except Exception:

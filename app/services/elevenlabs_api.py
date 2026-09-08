@@ -250,6 +250,23 @@ async def synthesize_speech(
         except Exception:  # noqa: BLE001
             err_msg = f"HTTP {resp.status_code}: {resp.text[:300]}"
 
+        try:
+            from app.services.api_tracker_hook import record_api_call
+            record_api_call(
+                provider="ElevenLabs",
+                model=effective_model,
+                call_type="audio",
+                prompt_tokens=len(clean_text),
+                duration_sec=0.0,
+                cost_usd=0.0,
+                status_code=resp.status_code,
+                error_message=err_msg[:300],
+                project_source="elevenlabs_tts",
+                metadata={"voice_id": effective_voice_id},
+            )
+        except Exception:
+            pass
+
         if resp.status_code == 401:
             raise ElevenLabsApiError(
                 f"11Labs API: неверный API-ключ (401 Unauthorized) — {err_msg}"
@@ -277,4 +294,22 @@ async def synthesize_speech(
         out_path.name,
         len(audio_bytes),
     )
+    try:
+        from app.services.api_tracker_hook import record_api_call
+        char_count = len(clean_text)
+        cost_est = round(char_count * 0.00015, 6)
+        record_api_call(
+            provider="ElevenLabs",
+            model=effective_model,
+            call_type="audio",
+            prompt_tokens=char_count,
+            duration_sec=0.0,
+            cost_usd=cost_est,
+            media_count=1,
+            status_code=200,
+            project_source="elevenlabs_tts",
+            metadata={"voice_id": effective_voice_id, "chars": char_count},
+        )
+    except Exception:
+        pass
     return out_path

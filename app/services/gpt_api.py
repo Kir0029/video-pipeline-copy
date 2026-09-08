@@ -2584,6 +2584,22 @@ async def chat(
             logger.warning(str(last_exc))
         except GptApiError as e:
             if not e.retryable:
+                try:
+                    from app.services.api_tracker_hook import record_api_call
+                    _st = int(e.context.get("status_code") or e.context.get("provider_code") or 500)
+                    record_api_call(
+                        provider=provider_label.split()[0].lower() if provider_label else "llm",
+                        model=use_model,
+                        prompt_tokens=max(10, len(prompt or "") // 4),
+                        completion_tokens=0,
+                        duration_sec=0.0,
+                        cost_usd=0.0,
+                        status_code=_st,
+                        error_message=str(e)[:300],
+                        project_source="chat/pipeline",
+                    )
+                except Exception:
+                    pass
                 raise
             # kie иногда падает на PDF input_file → code=500; оставляем только текст.
             # Не сжигаем попытку: attempt -= 1, чтобы text-only точно ушёл.
@@ -2609,7 +2625,26 @@ async def chat(
             backoff = min(2.0 * (2 ** (attempt - 1)), 30.0)
             await asyncio.sleep(backoff)
 
-    raise last_exc or GptApiError("GPT: неизвестная ошибка", context={"model": use_model})
+    final_err = last_exc or GptApiError("GPT: неизвестная ошибка", context={"model": use_model})
+    try:
+        from app.services.api_tracker_hook import record_api_call
+        _st = 500
+        if isinstance(final_err, GptApiError):
+            _st = int(final_err.context.get("status_code") or final_err.context.get("provider_code") or 500)
+        record_api_call(
+            provider=provider_label.split()[0].lower() if provider_label else "llm",
+            model=use_model,
+            prompt_tokens=max(10, len(prompt or "") // 4),
+            completion_tokens=0,
+            duration_sec=0.0,
+            cost_usd=0.0,
+            status_code=_st,
+            error_message=str(final_err)[:300],
+            project_source="chat/pipeline",
+        )
+    except Exception:
+        pass
+    raise final_err
 
 
 def is_pdf_provider_failure(exc: BaseException) -> bool:
