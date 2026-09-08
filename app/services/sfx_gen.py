@@ -170,6 +170,9 @@ async def _elevenlabs_sfx(prompt: str, duration: float, out_path: Path) -> Path:
     if not key:
         raise RuntimeError("no elevenlabs key")
 
+    from app.services.api_tracker_hook import check_api_allowed
+    check_api_allowed(provider="elevenlabs", model="sound-generation")
+
     t0 = time.time()
     try:
         async with httpx.AsyncClient(timeout=120) as client:

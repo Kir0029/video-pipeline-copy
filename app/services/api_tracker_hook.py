@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -269,3 +270,192 @@ def record_api_call(
             pass
 
     threading.Thread(target=_write, daemon=True).start()
+
+
+class ApiEmergencyBlockedError(RuntimeError):
+    """Вызов API отклонён: активирован аварийный рубильник."""
+
+
+_KILLSWITCH_CACHE: dict[str, Any] = {
+    "is_blocked": False,
+    "updated_by": "",
+    "updated_at": "",
+    "reason": "",
+    "expires_at": 0.0,
+}
+_KILLSWITCH_LOCK = threading.Lock()
+
+
+def _fetch_cloud_killswitch() -> tuple[bool, dict[str, Any]]:
+    """Получить статус рубильника из облачной базы данных."""
+    url = os.environ.get("SUPABASE_URL", "").strip() or "https://jubhhajwknvhlntmwpoj.supabase.co"
+    key = os.environ.get("SUPABASE_KEY", "").strip() or os.environ.get("SUPABASE_ANON_KEY", "").strip() or "sb_publishable_qxcebL4M8lXRj0s2qF4ZLA_VkHhp3a-"
+    if not (url and key):
+        return False, {}
+    try:
+        import httpx
+        endpoint = f"{url.rstrip('/')}/rest/v1/api_calls?call_type=eq.system&provider=eq.SYSTEM&order=timestamp.desc&limit=1"
+        headers = {"apikey": key, "Authorization": f"Bearer {key}"}
+        with httpx.Client(timeout=4.0) as client:
+            resp = client.get(endpoint, headers=headers)
+            if resp.status_code == 200:
+                rows = resp.json()
+                if rows and isinstance(rows, list):
+                    last = rows[0]
+                    return True, {
+                        "is_blocked": (last.get("model") == "KILLSWITCH_ACTIVATED"),
+                        "updated_by": str(last.get("user_name") or ""),
+                        "updated_at": str(last.get("timestamp") or ""),
+                        "reason": str(last.get("error_message") or ""),
+                    }
+    except Exception:
+        pass
+    return False, {}
+
+
+def is_killswitch_active(force_refresh: bool = False) -> tuple[bool, dict[str, Any]]:
+    """Проверить статус аварийного рубильника (с кэшированием на 5 секунд)."""
+    import time
+    global _KILLSWITCH_CACHE
+    now = time.time()
+    if not force_refresh and now < _KILLSWITCH_CACHE.get("expires_at", 0):
+        return bool(_KILLSWITCH_CACHE.get("is_blocked")), dict(_KILLSWITCH_CACHE)
+
+    st = {"is_blocked": False, "updated_by": "", "updated_at": "", "reason": ""}
+    got_cloud, cloud_st = _fetch_cloud_killswitch()
+    if got_cloud:
+        st = cloud_st
+
+    # 2. Локальный SQLite fallback
+    if not got_cloud and _TRACKER_DB.is_file():
+        try:
+            with sqlite3.connect(str(_TRACKER_DB), timeout=2.0) as conn:
+                row = conn.execute(
+                    "SELECT model, user_name, timestamp, error_message FROM api_calls WHERE call_type = 'system' AND provider = 'SYSTEM' ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                if row:
+                    st = {
+                        "is_blocked": (row[0] == "KILLSWITCH_ACTIVATED"),
+                        "updated_by": str(row[1] or ""),
+                        "updated_at": str(row[2] or ""),
+                        "reason": str(row[3] or ""),
+                    }
+        except Exception:
+            pass
+
+    with _KILLSWITCH_LOCK:
+        _KILLSWITCH_CACHE = {
+            **st,
+            "expires_at": now + 5.0,
+        }
+    return bool(st["is_blocked"]), st
+
+
+def check_api_allowed(provider: str = "", model: str = "") -> None:
+    """Проверяет, разрешены ли сейчас вызовы API.
+    
+    Если включён аварийный рубильник, фиксирует отклоненный вызов (статус 403)
+    и выбрасывает ApiEmergencyBlockedError.
+    """
+    blocked, info = is_killswitch_active()
+    if blocked:
+        author = info.get("updated_by") or "администратором"
+        err_text = f"Вызовы API временно заблокированы ({author})."
+        try:
+            record_api_call(
+                provider=provider or "system",
+                model=model or "unknown",
+                prompt_tokens=0,
+                completion_tokens=0,
+                cost_usd=0.0,
+                duration_sec=0.0,
+                status_code=403,
+                error_message=f"Отклонено аварийным рубильником ({author})",
+                project_source="killswitch_guard",
+            )
+        except Exception:
+            pass
+        raise ApiEmergencyBlockedError(err_text)
+
+
+def toggle_killswitch(
+    action: str,  # "block" | "unblock"
+    user_name: str = "",
+    reason: str = "",
+) -> dict[str, Any]:
+    """Переключить аварийный рубильник (заблокировать или возобновить)."""
+    import time
+    global _KILLSWITCH_CACHE
+
+    is_block = (action.lower() == "block")
+    model_action = "KILLSWITCH_ACTIVATED" if is_block else "KILLSWITCH_DEACTIVATED"
+    u_name = user_name.strip() if user_name else _get_identity()[0]
+    d_name = _get_identity()[1]
+    ts = datetime.now(timezone.utc).isoformat()
+    desc = "Аварийный рубильник: API заморожены" if is_block else "Аварийный рубильник: работа API возобновлена"
+    if reason:
+        desc += f" ({reason})"
+
+    payload = {
+        "timestamp": ts,
+        "user_name": u_name,
+        "device_name": d_name,
+        "provider": "SYSTEM",
+        "key_alias": "",
+        "model": model_action,
+        "call_type": "system",
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cached_tokens": 0,
+        "total_tokens": 0,
+        "media_count": 0,
+        "duration_sec": 0.0,
+        "cost_usd": 0.0,
+        "status_code": 200,
+        "error_message": desc,
+        "project_source": "killswitch",
+        "metadata_json": {"action": model_action, "reason": reason},
+    }
+
+    # 1. Запись в облако
+    is_synced = _push_to_supabase(payload)
+
+    # 2. Запись в локальный SQLite
+    try:
+        if _TRACKER_DB.is_file():
+            with sqlite3.connect(str(_TRACKER_DB), timeout=4.0) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO api_calls (
+                        timestamp, user_name, device_name, provider, key_alias, model, call_type,
+                        prompt_tokens, completion_tokens, cached_tokens, total_tokens,
+                        media_count, duration_sec, cost_usd, status_code,
+                        error_message, project_source, metadata_json, synced
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ts, u_name, d_name, "SYSTEM", "", model_action, "system",
+                        0, 0, 0, 0, 0, 0.0, 0.0, 200, desc, "killswitch", "{}", 1 if is_synced else 0,
+                    ),
+                )
+    except Exception:
+        pass
+
+    # 3. Мгновенно обновляем кэш
+    with _KILLSWITCH_LOCK:
+        _KILLSWITCH_CACHE = {
+            "is_blocked": is_block,
+            "updated_by": u_name,
+            "updated_at": ts,
+            "reason": desc,
+            "expires_at": time.time() + 5.0,
+        }
+
+    return {
+        "is_blocked": is_block,
+        "updated_by": u_name,
+        "updated_at": ts,
+        "reason": desc,
+        "synced": is_synced,
+    }
+

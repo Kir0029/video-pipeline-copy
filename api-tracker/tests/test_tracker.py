@@ -311,3 +311,62 @@ def test_api_profile_and_users(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     users = users_res.json()["users"]
     assert "Владелец" in users or len(users) > 0
 
+
+def test_killswitch_api_toggle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Проверка работы API рубильника: блокировка, разблокировка и журнал аудита."""
+    db_file = tmp_path / "killswitch_test.db"
+    monkeypatch.setattr("app.db.DEFAULT_DB_PATH", db_file)
+    monkeypatch.setattr("app.identity.get_appdata_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.identity.BASE_DIR", tmp_path)
+    init_db(db_file)
+
+    monkeypatch.setattr("app.cloud_sync.get_cloud_killswitch_state", lambda: {})
+    monkeypatch.setattr("app.cloud_sync.push_audit_log", lambda **kw: True)
+
+    client = TestClient(app)
+
+    # 1. По умолчанию API не заблокированы
+    res = client.get("/api/system/killswitch")
+    assert res.status_code == 200
+    assert res.json()["is_blocked"] is False
+
+    # 2. Активируем рубильник (блокировка)
+    post_block = client.post(
+        "/api/system/killswitch",
+        json={"action": "block", "user_name": "Владелец", "reason": "Экстренная остановка"},
+    )
+    assert post_block.status_code == 200
+    assert post_block.json()["is_blocked"] is True
+    assert post_block.json()["updated_by"] == "Владелец"
+
+    # 3. Проверяем статус после блокировки
+    st_res = client.get("/api/system/killswitch")
+    assert st_res.status_code == 200
+    assert st_res.json()["is_blocked"] is True
+
+    # 4. Проверяем наличие записи аудита в базе
+    logs, cnt = get_logs(call_type="system", db_path=db_file)
+    assert cnt == 1
+    assert logs[0]["model"] == "KILLSWITCH_ACTIVATED"
+    assert logs[0]["provider"] == "SYSTEM"
+    assert logs[0]["user_name"] == "Владелец"
+
+    # 5. Деактивируем рубильник (разблокировка)
+    post_unblock = client.post(
+        "/api/system/killswitch",
+        json={"action": "unblock", "user_name": "Менеджер", "reason": "Возобновление работы"},
+    )
+    assert post_unblock.status_code == 200
+    assert post_unblock.json()["is_blocked"] is False
+    assert post_unblock.json()["updated_by"] == "Менеджер"
+
+    # 6. Проверяем статус после разблокировки
+    st_unblock = client.get("/api/system/killswitch")
+    assert st_unblock.status_code == 200
+    assert st_unblock.json()["is_blocked"] is False
+
+    logs2, cnt2 = get_logs(call_type="system", db_path=db_file)
+    assert cnt2 == 2
+    assert logs2[0]["model"] == "KILLSWITCH_DEACTIVATED"
+
+

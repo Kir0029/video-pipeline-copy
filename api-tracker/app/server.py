@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.db import get_logs, get_stats, init_db, insert_call
+from app.identity import detect_device_name, load_user_profile
 from app.pricing import DEFAULT_PRICING, calculate_cost
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -269,6 +270,101 @@ async def logs_list(
 async def pricing_catalog():
     """Справочник цен по моделям."""
     return DEFAULT_PRICING
+
+
+class KillswitchToggleRequest(BaseModel):
+    action: str  # "block" | "unblock"
+    user_name: str | None = None
+    reason: str | None = None
+
+
+@app.get("/api/system/killswitch")
+async def get_killswitch_status():
+    """Получить статус аварийного рубильника."""
+    # 1. Проверяем облако
+    try:
+        from app.cloud_sync import get_cloud_killswitch_state
+        st = get_cloud_killswitch_state()
+        if st.get("updated_at"):
+            return st
+    except Exception:
+        pass
+    # 2. Локально
+    try:
+        from app.db import get_local_killswitch_state
+        return get_local_killswitch_state()
+    except Exception:
+        pass
+    return {"is_blocked": False, "updated_by": "", "updated_at": "", "reason": ""}
+
+
+@app.post("/api/system/killswitch")
+async def post_killswitch_toggle(req: KillswitchToggleRequest):
+    """Переключить аварийный рубильник (заблокировать или возобновить)."""
+    user_name = (req.user_name or "").strip()
+    if not user_name:
+        prof = load_user_profile()
+        user_name = prof.get("user_name") or "Пользователь"
+
+    device_name = detect_device_name()
+    action_name = "KILLSWITCH_ACTIVATED" if req.action.lower() == "block" else "KILLSWITCH_DEACTIVATED"
+
+    # 1. Запись в облако
+    cloud_ok = False
+    try:
+        from app.cloud_sync import push_audit_log
+        cloud_ok = push_audit_log(
+            action=action_name,
+            user_name=user_name,
+            device_name=device_name,
+            reason=req.reason or "",
+        )
+    except Exception:
+        pass
+
+    # 2. Запись в локальную базу
+    desc = "Аварийный рубильник: API заморожены" if req.action.lower() == "block" else "Аварийный рубильник: работа API возобновлена"
+    if req.reason:
+        desc += f" ({req.reason})"
+    try:
+        insert_call(
+            provider="SYSTEM",
+            model=action_name,
+            cost_usd=0.0,
+            user_name=user_name,
+            device_name=device_name,
+            synced=1 if cloud_ok else 0,
+            call_type="system",
+            prompt_tokens=0,
+            completion_tokens=0,
+            cached_tokens=0,
+            media_count=0,
+            duration_sec=0.0,
+            status_code=200,
+            error_message=desc,
+            project_source="killswitch",
+            metadata={"action": action_name, "reason": req.reason or ""},
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+    except Exception:
+        pass
+
+    # 3. Синхронизация с хуком в app/services
+    try:
+        from app.services.api_tracker_hook import toggle_killswitch
+        toggle_killswitch(req.action, user_name=user_name, reason=req.reason or "")
+    except Exception:
+        pass
+
+    is_blocked = (req.action.lower() == "block")
+    return {
+        "is_blocked": is_blocked,
+        "updated_by": user_name,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "reason": desc,
+        "synced": cloud_ok,
+    }
+
 
 
 def _fetch_export_items(

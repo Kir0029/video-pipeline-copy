@@ -2275,6 +2275,9 @@ async def chat(
         via if via != "proxy" else _mask_proxy_url(proxy),
     )
 
+    from app.services.api_tracker_hook import check_api_allowed
+    check_api_allowed(provider=provider_label, model=use_model)
+
     responses_mode = is_responses_mode()
     if responses_mode:
         # stream=true: иначе Cloudflare рвёт длинный non-stream JSON, а у kie

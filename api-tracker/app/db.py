@@ -215,6 +215,9 @@ def get_logs(
     if status == "ok":
         query.append("AND status_code >= 200 AND status_code < 300")
         count_query.append("AND status_code >= 200 AND status_code < 300")
+    elif status == "blocked":
+        query.append("AND status_code = 403")
+        count_query.append("AND status_code = 403")
     elif status == "error":
         query.append("AND (status_code >= 400 OR status_code = 0)")
         count_query.append("AND (status_code >= 400 OR status_code = 0)")
@@ -253,7 +256,7 @@ def get_stats(
     db_path: Path | str | None = None,
 ) -> dict[str, Any]:
     """Сводные метрики и данные для графиков дашборда."""
-    where = ["WHERE 1=1"]
+    where = ["WHERE 1=1 AND call_type != 'system' AND user_name NOT IN ('Владелец', 'Менеджер')"]
     params: list[Any] = []
 
     if user_name and user_name != "all":
@@ -418,7 +421,25 @@ def get_local_distinct_users(db_path: Path | str | None = None) -> list[str]:
     """Список уникальных пользователей из локальной базы."""
     with get_connection(db_path) as conn:
         rows = conn.execute(
-            "SELECT DISTINCT user_name FROM api_calls WHERE user_name != '' AND user_name != 'unknown' ORDER BY user_name ASC"
+            "SELECT DISTINCT user_name FROM api_calls WHERE user_name != '' AND user_name != 'unknown' AND call_type != 'system' AND user_name NOT IN ('Владелец', 'Менеджер') ORDER BY user_name ASC"
         ).fetchall()
         return [r["user_name"] for r in rows]
+
+
+def get_local_killswitch_state(db_path: Path | str | None = None) -> dict[str, Any]:
+    """Получить статус рубильника из локальной базы данных."""
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM api_calls WHERE call_type = 'system' AND provider = 'SYSTEM' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            r = dict(row)
+            return {
+                "is_blocked": r.get("model") == "KILLSWITCH_ACTIVATED",
+                "updated_by": r.get("user_name") or "",
+                "updated_at": r.get("timestamp") or "",
+                "reason": r.get("error_message") or "",
+            }
+    return {"is_blocked": False, "updated_by": "", "updated_at": "", "reason": ""}
+
 

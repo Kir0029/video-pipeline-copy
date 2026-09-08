@@ -392,6 +392,9 @@ async def _run_job(
             max_parallel(job.provider),
         )
         try:
+            from app.services.api_tracker_hook import check_api_allowed
+            check_api_allowed(provider=job.provider, model=job.model)
+
             result = await run(job.path)
             final_path = Path(getattr(result, "file_path", job.path))
             if not final_path.is_file() or final_path.stat().st_size < 32:

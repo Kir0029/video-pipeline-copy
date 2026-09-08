@@ -151,6 +151,9 @@ async def synthesize_speech(
         or "eleven_multilingual_v2"
     ).strip()
 
+    from app.services.api_tracker_hook import check_api_allowed
+    check_api_allowed(provider="ElevenLabs", model=effective_model)
+
     url = f"{ELEVENLABS_API_BASE_URL}/text-to-speech/{effective_voice_id}"
     headers = {
         "xi-api-key": api_key,

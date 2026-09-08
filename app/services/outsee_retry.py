@@ -913,6 +913,8 @@ async def generate_image_with_retries(
         while attempt < max_attempts_per_prompt:
             attempt += 1
             abort_if_cancelled(pid if isinstance(pid, int) else None)
+            from app.services.api_tracker_hook import check_api_allowed
+            check_api_allowed(provider=str(backend or "image"), model=str(kwargs.get("model_slug") or "image"))
             attempt_kwargs = dict(kwargs)
             attempt_kwargs["prompt_id_prefix"] = base_prompt_id
             try:
@@ -1456,6 +1458,8 @@ async def generate_video_with_retries(
 
     while True:
         abort_if_cancelled(project_id)
+        from app.services.api_tracker_hook import check_api_allowed
+        check_api_allowed(provider="kling" if phase == "fallback" else "video", model=str(primary_slug or "video"))
         use_kling = phase == "fallback"
         if use_kling:
             if fallback_burns >= VIDEO_FALLBACK_ATTEMPTS:

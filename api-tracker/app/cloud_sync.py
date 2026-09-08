@@ -64,11 +64,11 @@ def push_call_to_supabase(call_data: dict[str, Any]) -> bool:
 
 
 def normalize_user_name(name: str | None) -> str:
-    """Нормализация имени пользователя: объединение админ-алиасов в kir00."""
+    """Нормализация имени пользователя: объединение админ/тест-алиасов в kir00."""
     n = (name or "").strip()
     if not n:
         return "kir00"
-    if n.lower() in ("kir (admin)", "admin", "kir", "administrator", "администратор"):
+    if n.lower() in ("kir (admin)", "admin", "kir", "administrator", "администратор", "владелец", "менеджер"):
         return "kir00"
     return n
 
@@ -79,14 +79,14 @@ def get_cloud_distinct_users() -> list[str]:
     if not url or not get_supabase_key():
         return []
 
-    endpoint = f"{url.rstrip('/')}/rest/v1/api_calls?select=user_name&order=user_name.asc"
+    endpoint = f"{url.rstrip('/')}/rest/v1/api_calls?call_type=neq.system&select=user_name&order=user_name.asc"
     try:
         with httpx.Client(timeout=10.0) as client:
             resp = client.get(endpoint, headers=_get_headers())
             if resp.status_code == 200:
                 rows = resp.json()
                 users = sorted({normalize_user_name(r.get("user_name")) for r in rows if r.get("user_name")})
-                return [u for u in users if u]
+                return [u for u in users if u and u not in ("unknown", "Владелец", "Менеджер")]
     except Exception as exc:
         logger.debug("get_cloud_distinct_users error: {}", exc)
     return []
@@ -131,6 +131,8 @@ def get_cloud_logs(
         params.append(f"call_type=eq.{call_type}")
     if status == "ok":
         params.append("status_code=gte.200&status_code=lt.300")
+    elif status == "blocked":
+        params.append("status_code=eq.403")
     elif status == "error":
         params.append("or=(status_code.gte.400,status_code.eq.0)")
     if date_from:
@@ -177,9 +179,10 @@ def get_cloud_stats(
     if not url or not get_supabase_key():
         return {}
 
-    # Запрашиваем поля, нужные для расчёта аналитики
+    # Запрашиваем поля, нужные для расчёта аналитики (исключая системные события)
     params: list[str] = [
-        "select=cost_usd,total_tokens,prompt_tokens,completion_tokens,duration_sec,status_code,provider,model,user_name,timestamp",
+        "select=cost_usd,total_tokens,prompt_tokens,completion_tokens,duration_sec,status_code,provider,model,user_name,timestamp,call_type",
+        "call_type=neq.system",
         "order=timestamp.desc",
         "limit=5000",
     ]
@@ -221,9 +224,13 @@ def get_cloud_stats(
     by_day_map: dict[str, dict[str, Any]] = {}
 
     for r in rows:
+        if str(r.get("call_type") or "") == "system" or str(r.get("provider") or "") == "SYSTEM":
+            continue
         m = r.get("model") or "unknown"
         p = r.get("provider") or "unknown"
         u = normalize_user_name(r.get("user_name"))
+        if u in ("Владелец", "Менеджер", "unknown"):
+            continue
         c = float(r.get("cost_usd") or 0.0)
         tok = int(r.get("total_tokens") or 0)
         dur = float(r.get("duration_sec") or 0.0)
@@ -295,3 +302,63 @@ def get_cloud_stats(
         "daily_chart": daily_chart,
         "by_user": by_user,
     }
+
+
+def get_cloud_killswitch_state() -> dict[str, Any]:
+    """Получить текущий статус аварийного рубильника из облака."""
+    url = get_supabase_url()
+    if not url or not get_supabase_key():
+        return {"is_blocked": False, "updated_by": "", "updated_at": "", "reason": ""}
+
+    endpoint = f"{url.rstrip('/')}/rest/v1/api_calls?call_type=eq.system&provider=eq.SYSTEM&order=timestamp.desc&limit=1"
+    try:
+        with httpx.Client(timeout=6.0) as client:
+            resp = client.get(endpoint, headers=_get_headers())
+            if resp.status_code == 200:
+                rows = resp.json()
+                if rows and isinstance(rows, list):
+                    last = rows[0]
+                    is_blocked = (last.get("model") == "KILLSWITCH_ACTIVATED")
+                    return {
+                        "is_blocked": is_blocked,
+                        "updated_by": normalize_user_name(last.get("user_name")),
+                        "updated_at": last.get("timestamp") or "",
+                        "reason": str(last.get("error_message") or ""),
+                    }
+    except Exception as exc:
+        logger.debug("get_cloud_killswitch_state error: {}", exc)
+    return {"is_blocked": False, "updated_by": "", "updated_at": "", "reason": ""}
+
+
+def push_audit_log(
+    action: str,  # "KILLSWITCH_ACTIVATED" | "KILLSWITCH_DEACTIVATED"
+    user_name: str,
+    device_name: str = "",
+    reason: str = "",
+) -> bool:
+    """Записать событие аудита аварийного рубильника в облако."""
+    desc = "Аварийный рубильник: API заморожены" if action == "KILLSWITCH_ACTIVATED" else "Аварийный рубильник: работа API возобновлена"
+    if reason:
+        desc += f" ({reason})"
+
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "user_name": user_name or "Пользователь",
+        "device_name": device_name or "",
+        "provider": "SYSTEM",
+        "model": action,
+        "call_type": "system",
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cached_tokens": 0,
+        "total_tokens": 0,
+        "media_count": 0,
+        "duration_sec": 0.0,
+        "cost_usd": 0.0,
+        "status_code": 200,
+        "error_message": desc,
+        "project_source": "killswitch",
+        "metadata_json": {"action": action, "reason": reason},
+    }
+    return push_call_to_supabase(payload)
+
