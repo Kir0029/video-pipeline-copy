@@ -27,7 +27,7 @@ from app.services.project_steps import list_step_codes, start_step
 from app.services.run_sync import ensure_run_for_project, sync_run_for_project, _get_default_workflow_id
 from app.storage import ProjectSheet
 from app.db import commit_with_retry
-from app.web.deps import get_session
+from app.web.deps import get_project_session, get_session
 from app.web.project_dto import project_to_detail, project_to_summary
 from app.web.schemas import CreateProjectRequest, ProjectDetail, ProjectSummary
 
@@ -444,6 +444,12 @@ async def patch_project(
     p.updated_at = datetime.utcnow()
     await commit_with_retry(session)
     await session.refresh(p)
+    from app.project_db import sync_project_row_to_project_db
+
+    try:
+        await sync_project_row_to_project_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("patch_project #{}: sync to project.db failed: {}", project_id, exc)
     await publish_project_event(project_id, event_type="project_updated")
     return p
 
@@ -452,7 +458,7 @@ async def patch_project(
 async def media_review(
     project_id: int,
     kind: str = Query("images", pattern="^(images|videos)$"),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> list[dict]:
     """Кадры с путями к последним scene_image / scene_video для визуального HITL."""
     artifact_kind = (
@@ -534,6 +540,12 @@ async def run_project_step(
         raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()
     await session.refresh(p)
+    from app.project_db import sync_project_row_to_project_db
+
+    try:
+        await sync_project_row_to_project_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("run_project_step #{}: sync to project.db failed: {}", project_id, exc)
     await sync_run_for_project(project_id)
     await publish_project_event(
         project_id,

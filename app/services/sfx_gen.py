@@ -160,27 +160,65 @@ def _synth(kind: str, duration: float, *, seed: int = 42) -> list[float]:
 
 
 async def _elevenlabs_sfx(prompt: str, duration: float, out_path: Path) -> Path:
+    import time
     import httpx
 
+    from app.services.api_tracker_hook import record_api_call
     from app.settings import settings
 
     key = settings.elevenlabs_api_key
     if not key:
         raise RuntimeError("no elevenlabs key")
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
-            "https://api.elevenlabs.io/v1/sound-effects",
-            headers={"xi-api-key": key},
-            json={
-                "text": prompt[:450],
-                "duration_seconds": min(max(duration, 0.5), 22.0),
-                "prompt_influence": 0.5,
-            },
-        )
-        if resp.status_code != 200:
-            raise RuntimeError(f"11labs sfx {resp.status_code}: {resp.text[:200]}")
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(resp.content)
+
+    t0 = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                "https://api.elevenlabs.io/v1/sound-generation",
+                headers={"xi-api-key": key},
+                json={
+                    "text": prompt[:450],
+                    "duration_seconds": min(max(duration, 0.5), 22.0),
+                    "prompt_influence": 0.5,
+                },
+            )
+            dur = time.time() - t0
+            if resp.status_code != 200:
+                record_api_call(
+                    provider="ElevenLabs",
+                    model="eleven-sound-generation",
+                    call_type="audio",
+                    duration_sec=dur,
+                    status_code=resp.status_code,
+                    error_message=resp.text[:200],
+                    project_source="sfx_gen",
+                )
+                raise RuntimeError(f"11labs sfx {resp.status_code}: {resp.text[:200]}")
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(resp.content)
+            record_api_call(
+                provider="ElevenLabs",
+                model="eleven-sound-generation",
+                call_type="audio",
+                duration_sec=dur,
+                cost_usd=0.01,
+                media_count=1,
+                status_code=200,
+                project_source="sfx_gen",
+                metadata={"prompt": prompt[:100], "duration": duration},
+            )
+    except Exception as e:
+        if not isinstance(e, RuntimeError):
+            record_api_call(
+                provider="ElevenLabs",
+                model="eleven-sound-generation",
+                call_type="audio",
+                duration_sec=time.time() - t0,
+                status_code=500,
+                error_message=str(e)[:200],
+                project_source="sfx_gen",
+            )
+        raise
     return out_path
 
 

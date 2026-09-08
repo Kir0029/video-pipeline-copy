@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>API Tracker & Cost Monitor</title>
+  <title>API Tracker & Cost Monitor (Cloud)</title>
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Chart.js -->
@@ -33,13 +33,11 @@
       font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       user-select: none;
     }
-    /* Кастомный скроллбар */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 4px; }
     ::-webkit-scrollbar-thumb:hover { background: rgba(34, 211, 238, 0.4); }
 
-    /* Выпадающие списки (select и option) для темной темы */
     select {
       background-color: #16161c !important;
       color: #ffffff !important;
@@ -71,12 +69,18 @@
             Live
           </span>
         </div>
-        <p class="text-[11px] text-white/40">Мониторинг расходов, токенов и задержек API-ключей</p>
+        <p class="text-[11px] text-white/40">Централизованный учёт расходов и активности всей команды</p>
       </div>
     </div>
 
     <!-- Actions & Filter -->
     <div class="flex flex-wrap items-center gap-2">
+
+      <!-- Фильтр по пользователям -->
+      <select id="user-filter" onchange="setUserFilter(this.value)" class="h-8 px-2.5 rounded-xl border border-darkBorder bg-[#16161c] text-xs text-white font-medium focus:border-brand/60 outline-none cursor-pointer" title="Фильтровать по конкретному человеку">
+        <option value="all">👥 Все пользователи</option>
+      </select>
+
       <!-- Период -->
       <div class="flex rounded-xl bg-white/[0.04] p-1 border border-darkBorder">
         <button onclick="setPeriod('today')" id="btn-today" class="period-btn px-2.5 py-1 rounded-lg text-[11px] font-medium transition bg-brand text-black font-bold">Сегодня</button>
@@ -85,23 +89,28 @@
         <button onclick="setPeriod('all')" id="btn-all" class="period-btn px-2.5 py-1 rounded-lg text-[11px] font-medium text-white/60 hover:text-white transition">Всё</button>
       </div>
 
-      <!-- Кнопка обновления -->
+      <!-- Профиль пользователя -->
+      <button onclick="openNameModal(false)" id="btn-user-profile" class="flex items-center gap-1.5 rounded-xl border border-brand/30 bg-brand/10 hover:bg-brand/20 px-2.5 py-1.5 text-[11px] font-medium text-brand transition outline-none" title="Нажмите, чтобы сменить имя">
+        <i data-lucide="user" class="h-3.5 w-3.5"></i>
+        <span id="active-user-name">Пользователь</span>
+      </button>
+
+      <!-- Синхронизация -->
+      <button onclick="syncPending()" id="btn-sync" class="flex items-center gap-1.5 rounded-xl border border-darkBorder bg-white/[0.04] hover:bg-white/[0.08] px-2.5 py-1.5 text-[11px] font-medium text-white transition outline-none" title="Отправить неотправленные локальные логи в облако">
+        <i data-lucide="cloud-upload" class="h-3.5 w-3.5 text-sky-400" id="sync-icon"></i>
+      </button>
+
+      <!-- Обновить -->
       <button onclick="fetchData()" class="flex items-center gap-1.5 rounded-xl border border-darkBorder bg-white/[0.04] hover:bg-white/[0.08] px-3 py-1.5 text-[11px] font-medium text-white transition outline-none" title="Обновить данные">
         <i data-lucide="rotate-ccw" class="h-3.5 w-3.5 text-brand" id="refresh-icon"></i>
         <span>Обновить</span>
       </button>
 
-      <!-- Экспорт -->
-      <div class="flex items-center gap-1">
-        <a href="/api/export/excel" class="flex items-center gap-1.5 rounded-xl border border-brand/30 bg-brand/10 hover:bg-brand/20 px-3 py-1.5 text-[11px] font-semibold text-brand transition shadow-sm outline-none" title="Скачать отчёт в Excel">
-          <i data-lucide="file-spreadsheet" class="h-3.5 w-3.5"></i>
-          <span>Excel (.xlsx)</span>
-        </a>
-        <a href="/api/export/csv" class="flex items-center gap-1.5 rounded-xl border border-darkBorder bg-white/[0.04] hover:bg-white/[0.08] px-3 py-1.5 text-[11px] font-medium text-white/80 transition outline-none" title="Скачать CSV">
-          <i data-lucide="download" class="h-3.5 w-3.5"></i>
-          <span>CSV</span>
-        </a>
-      </div>
+      <!-- Экспорт Excel -->
+      <button onclick="exportExcel()" id="btn-export-excel" class="flex items-center gap-1.5 rounded-xl border border-brand/30 bg-brand/10 hover:bg-brand/20 px-3 py-1.5 text-[11px] font-semibold text-brand transition shadow-sm outline-none cursor-pointer" title="Скачать отчёт в Excel">
+        <i data-lucide="file-spreadsheet" class="h-3.5 w-3.5"></i>
+        <span>Excel</span>
+      </button>
     </div>
   </header>
 
@@ -146,6 +155,20 @@
       </div>
       <div class="text-xl md:text-2xl font-black text-white font-mono tracking-tight" id="metric-latency">0.0 сек</div>
       <span class="text-[10px] text-white/40 mt-1">время отклика моделей</span>
+    </div>
+  </section>
+
+  <!-- ─── TEAM USERS BREAKDOWN ─────────────────────────────────────────── -->
+  <section id="users-breakdown-section" class="p-4 rounded-2xl bg-darkCard border border-darkBorder mb-6">
+    <div class="flex items-center justify-between mb-3">
+      <div class="flex items-center gap-2">
+        <i data-lucide="users" class="h-4 w-4 text-brand"></i>
+        <h3 class="font-bold text-white text-xs">Расходы по пользователям</h3>
+      </div>
+      <span class="text-[10px] text-white/40">статистика команды</span>
+    </div>
+    <div id="users-cards-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
+      <!-- Динамические карточки пользователей -->
     </div>
   </section>
 
@@ -198,7 +221,7 @@
             type="text"
             id="search-input"
             oninput="handleSearch()"
-            placeholder="Поиск по модели, ошибке..."
+            placeholder="Поиск по имени, модели..."
             class="w-full h-8 pl-8 pr-3 rounded-xl border border-darkBorder bg-white/[0.04] text-xs text-white placeholder:text-white/30 focus:border-brand/60 focus:outline-none outline-none"
           />
         </div>
@@ -227,6 +250,7 @@
         <thead class="sticky top-0 bg-[#16161c] border-b border-darkBorder text-[11px] text-white/50 font-semibold uppercase tracking-wider">
           <tr>
             <th class="py-2.5 px-3.5">Время (МСК)</th>
+            <th class="py-2.5 px-3">Пользователь</th>
             <th class="py-2.5 px-3">Провайдер</th>
             <th class="py-2.5 px-3">Модель</th>
             <th class="py-2.5 px-3">Тип</th>
@@ -238,19 +262,66 @@
         </thead>
         <tbody id="logs-tbody" class="divide-y divide-darkBorder text-[11px]">
           <tr>
-            <td colspan="8" class="text-center py-12 text-white/30 italic">Загрузка данных...</td>
+            <td colspan="9" class="text-center py-12 text-white/30 italic">Загрузка данных...</td>
           </tr>
         </tbody>
       </table>
     </div>
   </section>
 
+  <!-- ─── MODAL: ВВОД ИМЕНИ ПОЛЬЗОВАТЕЛЯ ─────────────────────────────── -->
+  <div id="name-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 hidden">
+    <div class="w-full max-w-sm rounded-3xl bg-[#121217] border border-brand/40 p-6 shadow-[0_0_50px_rgba(34,211,238,0.15)] flex flex-col gap-4">
+      <div class="flex items-center gap-3">
+        <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-brand/15 border border-brand/30 text-brand">
+          <i data-lucide="user" class="h-5 w-5"></i>
+        </div>
+        <div>
+          <h2 class="text-sm font-bold text-white leading-snug">Пожалуйста, введите Ваше имя или псевдоним</h2>
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-1.5 pt-1">
+        <input
+          type="text"
+          id="name-modal-input"
+          placeholder="Имя или псевдоним"
+          class="h-10 px-3.5 rounded-xl border border-darkBorder bg-white/[0.06] text-sm text-white focus:border-brand focus:outline-none transition"
+          maxlength="40"
+          onkeydown="if (event.key === 'Enter') submitNameModal()"
+        />
+        <div id="name-modal-error" class="text-[10px] text-red-400 hidden">Пожалуйста, введите как минимум 2 символа</div>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 pt-1">
+        <button
+          id="name-modal-cancel"
+          type="button"
+          onclick="closeNameModal()"
+          class="hidden px-4 py-2 rounded-xl text-xs font-medium text-white/60 hover:text-white transition"
+        >
+          Отмена
+        </button>
+        <button
+          type="button"
+          onclick="submitNameModal()"
+          class="w-full sm:w-auto px-5 py-2 rounded-xl bg-brand text-black font-bold text-xs hover:bg-brand/90 transition shadow-sm"
+        >
+          Сохранить
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- ─── JAVASCRIPT LOGIC ────────────────────────────────────────────── -->
   <script>
     let currentPeriod = 'today';
+    let currentScope = 'cloud'; // 'cloud' | 'local'
+    let currentUser = 'all';
     let timelineChart = null;
     let modelPieChart = null;
     let searchDebounce = null;
+    let isUserConfigured = false;
 
     function getPeriodRange(period) {
       const now = new Date();
@@ -269,6 +340,16 @@
       return { from: null, to: null };
     }
 
+    function setScope(scope) {
+      currentScope = 'cloud';
+      fetchData();
+    }
+
+    function setUserFilter(user) {
+      currentUser = user;
+      fetchData();
+    }
+
     function setPeriod(period) {
       currentPeriod = period;
       document.querySelectorAll('.period-btn').forEach(btn => {
@@ -283,11 +364,122 @@
       fetchData();
     }
 
+    async function loadUsersList() {
+      try {
+        const r = await fetch('/api/users');
+        if (!r.ok) return;
+        const data = await r.json();
+        const sel = document.getElementById('user-filter');
+        const prev = sel.value;
+        sel.innerHTML = '<option value="all">👥 Все пользователи</option>';
+        (data.users || []).forEach(u => {
+          const opt = document.createElement('option');
+          opt.value = u;
+          opt.textContent = `👤 ${u}`;
+          sel.appendChild(opt);
+        });
+        if (prev && Array.from(sel.options).some(o => o.value === prev)) {
+          sel.value = prev;
+        }
+      } catch (e) {
+        console.error('loadUsersList error:', e);
+      }
+    }
+
+    async function checkUserProfile() {
+      try {
+        const r = await fetch('/api/user-profile');
+        if (!r.ok) return;
+        const data = await r.json();
+        const activeSpan = document.getElementById('active-user-name');
+        if (activeSpan && data.user_name) {
+          activeSpan.textContent = data.user_name;
+        }
+        isUserConfigured = Boolean(data.is_configured);
+        if (!isUserConfigured) {
+          openNameModal(true, data.user_name);
+        }
+      } catch (e) {
+        console.error('checkUserProfile error:', e);
+      }
+    }
+
+    function openNameModal(isMandatory = false, defaultVal = '') {
+      const modal = document.getElementById('name-modal');
+      const input = document.getElementById('name-modal-input');
+      const cancelBtn = document.getElementById('name-modal-cancel');
+      const err = document.getElementById('name-modal-error');
+      if (err) err.classList.add('hidden');
+
+      if (defaultVal) {
+        input.value = defaultVal;
+      } else {
+        const activeName = document.getElementById('active-user-name').textContent;
+        input.value = activeName && activeName !== 'Пользователь' ? activeName : '';
+      }
+
+      if (isMandatory) {
+        cancelBtn.classList.add('hidden');
+      } else {
+        cancelBtn.classList.remove('hidden');
+      }
+      modal.classList.remove('hidden');
+      setTimeout(() => input.focus(), 50);
+    }
+
+    function closeNameModal() {
+      document.getElementById('name-modal').classList.add('hidden');
+    }
+
+    async function submitNameModal() {
+      const input = document.getElementById('name-modal-input');
+      const val = (input.value || '').trim();
+      const err = document.getElementById('name-modal-error');
+      if (val.length < 2) {
+        if (err) err.classList.remove('hidden');
+        input.focus();
+        return;
+      }
+      if (err) err.classList.add('hidden');
+
+      try {
+        const r = await fetch('/api/user-profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_name: val }),
+        });
+        if (r.ok) {
+          const data = await r.json();
+          document.getElementById('active-user-name').textContent = data.user_name;
+          isUserConfigured = true;
+          closeNameModal();
+          loadUsersList();
+          fetchData();
+        }
+      } catch (e) {
+        alert('Ошибка сохранения имени: ' + e);
+      }
+    }
+
+    async function syncPending() {
+      const icon = document.getElementById('sync-icon');
+      if (icon) icon.classList.add('animate-bounce');
+      try {
+        const r = await fetch('/api/sync', { method: 'POST' });
+        if (r.ok) {
+          const data = await r.json();
+          fetchData();
+        }
+      } finally {
+        if (icon) icon.classList.remove('animate-bounce');
+      }
+    }
+
     async function fetchData() {
       const icon = document.getElementById('refresh-icon');
       if (icon) icon.classList.add('animate-spin');
       try {
-        await Promise.all([fetchStats(), fetchLogs()]);
+        await Promise.all([fetchStats(), fetchLogs(), loadUsersList()]);
       } finally {
         if (icon) icon.classList.remove('animate-spin');
       }
@@ -295,44 +487,84 @@
 
     async function fetchStats() {
       const { from } = getPeriodRange(currentPeriod);
-      const url = from ? `/api/stats?date_from=${encodeURIComponent(from)}` : '/api/stats';
-      const r = await fetch(url);
+      const params = new URLSearchParams({ scope: currentScope });
+      if (from) params.append('date_from', from);
+      if (currentUser && currentUser !== 'all') params.append('user_name', currentUser);
+
+      const r = await fetch(`/api/stats?${params.toString()}`);
       if (!r.ok) return;
       const data = await r.json();
 
-      document.getElementById('metric-cost').textContent = `$${data.total_cost.toFixed(4)}`;
-      document.getElementById('metric-calls').textContent = data.total_calls.toLocaleString();
-      document.getElementById('metric-tokens').textContent = data.total_tokens.toLocaleString();
-      document.getElementById('metric-latency').textContent = `${data.avg_latency.toFixed(2)} сек`;
+      const summary = data.summary || data;
+      const totalCost = summary.total_cost || 0;
+      const totalCalls = summary.total_calls || 0;
+      const totalTokens = summary.total_tokens || 0;
+      const avgLat = summary.avg_latency || 0;
 
-      const errs = data.total_errors || 0;
+      document.getElementById('metric-cost').textContent = `$${totalCost.toFixed(4)}`;
+      document.getElementById('metric-calls').textContent = totalCalls.toLocaleString();
+      document.getElementById('metric-tokens').textContent = totalTokens.toLocaleString();
+      document.getElementById('metric-latency').textContent = `${avgLat.toFixed(2)} сек`;
+
+      const errs = summary.total_errors || 0;
       const callSub = document.getElementById('calls-subtitle');
-      if (errs > 0) {
-        callSub.textContent = `${errs} ошибок (${((errs / data.total_calls) * 100).toFixed(1)}%)`;
+      if (errs > 0 && totalCalls > 0) {
+        callSub.textContent = `${errs} ошибок (${((errs / totalCalls) * 100).toFixed(1)}%)`;
         callSub.className = 'text-[10px] text-red-400 mt-1';
       } else {
         callSub.textContent = '100% успешно';
         callSub.className = 'text-[10px] text-emerald-400 mt-1';
       }
 
+      // Карточки пользователей (сводка команды)
+      renderUsersCards(data.by_user || []);
+
       const timeUnit = data.time_unit || 'day';
       const sub = document.getElementById('timeline-chart-subtitle');
       if (sub) {
-        sub.textContent = timeUnit === 'hour' ? 'по часам (МСК)' : 'по дням';
+        sub.textContent = currentScope === 'cloud' ? 'общие траты по дням' : (timeUnit === 'hour' ? 'по часам (МСК)' : 'по дням');
       }
 
-      renderTimelineChart(data.daily || [], timeUnit);
-      renderModelPieChart(data.models || []);
+      renderTimelineChart(data.daily_chart || data.daily || [], timeUnit);
+      renderModelPieChart(data.by_model || data.models || []);
+    }
+
+    function renderUsersCards(users) {
+      const grid = document.getElementById('users-cards-grid');
+      const sec = document.getElementById('users-breakdown-section');
+      if (!users || !users.length) {
+        sec.classList.add('hidden');
+        return;
+      }
+      sec.classList.remove('hidden');
+
+      grid.innerHTML = users.map(u => {
+        const isSelected = currentUser === u.user_name;
+        return `
+          <div
+            onclick="setUserFilter('${u.user_name}')"
+            class="flex flex-col p-3 rounded-xl border transition-all cursor-pointer ${isSelected ? 'bg-brand/10 border-brand' : 'bg-white/[0.02] border-darkBorder hover:border-white/20'}"
+            title="Кликните, чтобы отфильтровать по ${u.user_name}"
+          >
+            <div class="flex items-center gap-1.5 mb-1">
+              <span class="h-2 w-2 rounded-full ${isSelected ? 'bg-brand' : 'bg-white/40'}"></span>
+              <span class="font-bold text-white truncate text-xs">${u.user_name}</span>
+            </div>
+            <div class="font-mono text-sm font-bold text-brand">$${Number(u.cost || 0).toFixed(4)}</div>
+            <div class="text-[10px] text-white/40 mt-0.5">${u.calls || 0} вызовов</div>
+          </div>
+        `;
+      }).join('');
     }
 
     function renderTimelineChart(daily, timeUnit) {
       const ctx = document.getElementById('timelineChart').getContext('2d');
       const labels = daily.map(d => {
-        if (!d.day) return '';
-        if (d.day.length === 10 && d.day.includes('-')) return d.day.slice(5);
-        return d.day;
+        const raw = d.date || d.day || '';
+        if (raw.length === 10 && raw.includes('-')) return raw.slice(5);
+        return raw;
       });
-      const costs = daily.map(d => d.cost_usd);
+      const costs = daily.map(d => Number(d.cost || d.cost_usd || 0));
 
       if (timelineChart) timelineChart.destroy();
 
@@ -360,7 +592,7 @@
             legend: { display: false },
             tooltip: {
               callbacks: {
-                label: (ctx) => `Расход: $${ctx.raw.toFixed(4)}`
+                label: (ctx) => `Расход: $${Number(ctx.raw || 0).toFixed(4)}`
               }
             }
           },
@@ -388,11 +620,37 @@
       });
     }
 
+    const MODEL_PALETTE = [
+      '#a855f7', // 1. Фиолетовый (Flux / Midjourney)
+      '#06b6d4', // 2. Циан / Бирюзовый (Gemini / DeepSeek)
+      '#f97316', // 3. Оранжевый (Kling AI)
+      '#10b981', // 4. Изумрудный (OpenAI GPT)
+      '#ec4899', // 5. Фуксия (Veo / Outsee)
+      '#3b82f6', // 6. Синий (Google)
+      '#f43f5e', // 7. Коралловый
+      '#eab308', // 8. Золотой (ElevenLabs)
+      '#6366f1', // 9. Индиго
+      '#14b8a6', // 10. Морская волна
+    ];
+
+    function getModelColor(modelName, index) {
+      const name = (modelName || '').toLowerCase();
+      if (name.includes('flux')) return '#a855f7'; // Фиолетовый
+      if (name.includes('gemini')) return '#06b6d4'; // Циан / Бирюзовый
+      if (name.includes('gpt') || name.includes('o1') || name.includes('o3') || name.includes('sol')) return '#10b981'; // Зелёный
+      if (name.includes('kling')) return '#f97316'; // Оранжевый
+      if (name.includes('veo') || name.includes('outsee')) return '#ec4899'; // Розовый / Фуксия
+      if (name.includes('deepseek')) return '#14b8a6'; // Морская волна
+      if (name.includes('eleven') || name.includes('tts')) return '#eab308'; // Золотой
+      if (name.includes('suno') || name.includes('music')) return '#8b5cf6'; // Индиго
+      return MODEL_PALETTE[index % MODEL_PALETTE.length];
+    }
+
     function renderModelPieChart(models) {
       const ctx = document.getElementById('modelPieChart').getContext('2d');
-      const top = models.slice(0, 5);
+      const top = models.slice(0, 7);
       const labels = top.map(m => m.model);
-      const costs = top.map(m => m.cost_usd);
+      const costs = top.map(m => Number(m.cost || m.cost_usd || 0));
 
       if (modelPieChart) modelPieChart.destroy();
 
@@ -408,16 +666,18 @@
         return;
       }
 
+      const colors = labels.map((m, idx) => getModelColor(m, idx));
+
       modelPieChart = new Chart(ctx, {
         type: 'doughnut',
         data: {
           labels: labels,
           datasets: [{
             data: costs,
-            backgroundColor: [
-              '#22d3ee', '#38bdf8', '#818cf8', '#c084fc', '#f472b6'
-            ],
-            borderWidth: 0,
+            backgroundColor: colors,
+            borderWidth: 2,
+            borderColor: '#121217',
+            hoverOffset: 4,
           }]
         },
         options: {
@@ -426,11 +686,18 @@
           plugins: {
             legend: {
               position: 'bottom',
-              labels: { color: 'rgba(255, 255, 255, 0.7)', font: { size: 10 }, boxWidth: 10 }
+              labels: {
+                color: 'rgba(255, 255, 255, 0.75)',
+                font: { size: 10, weight: '500' },
+                boxWidth: 8,
+                boxHeight: 8,
+                usePointStyle: true,
+                padding: 10,
+              }
             },
             tooltip: {
               callbacks: {
-                label: (ctx) => `${ctx.label}: $${ctx.raw.toFixed(4)}`
+                label: (ctx) => `${ctx.label}: $${Number(ctx.raw || 0).toFixed(4)}`
               }
             }
           }
@@ -468,8 +735,9 @@
       const status = document.getElementById('status-filter').value;
       const callType = document.getElementById('type-filter') ? document.getElementById('type-filter').value : '';
 
-      const params = new URLSearchParams({ limit: '100', offset: '0' });
+      const params = new URLSearchParams({ scope: currentScope, limit: '100', offset: '0' });
       if (from) params.append('date_from', from);
+      if (currentUser && currentUser !== 'all') params.append('user_name', currentUser);
       if (search) params.append('search', search);
       if (status) params.append('status', status);
       if (callType) params.append('call_type', callType);
@@ -481,10 +749,10 @@
       document.getElementById('table-total-badge').textContent = data.total;
       const tbody = document.getElementById('logs-tbody');
 
-      if (!data.items.length) {
+      if (!data.items || !data.items.length) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="8" class="text-center py-12 text-white/30 italic">
+            <td colspan="9" class="text-center py-12 text-white/30 italic">
               Нет записей активности за выбранный период
             </td>
           </tr>
@@ -497,16 +765,24 @@
         const timeStr = formatMskTime(row.timestamp);
         const provBadge = getProviderBadge(row.provider);
         const typeBadge = getCallTypeBadge(row.call_type);
+        const costVal = Number(row.cost_usd || 0);
 
         return `
           <tr class="hover:bg-white/[0.02] transition-colors">
             <td class="py-2 px-3.5 font-mono text-white/50">${timeStr}</td>
+            <td class="py-2 px-3">
+              <div class="flex items-center gap-1.5 font-semibold text-white">
+                <span class="h-1.5 w-1.5 rounded-full bg-brand"></span>
+                <span>${row.user_name || '—'}</span>
+              </div>
+              <div class="text-[9px] text-white/30 truncate max-w-[120px] font-mono">${row.device_name || ''}</div>
+            </td>
             <td class="py-2 px-3">${provBadge}</td>
             <td class="py-2 px-3 font-semibold text-white truncate max-w-[180px]" title="${row.model}">${row.model}</td>
             <td class="py-2 px-3">${typeBadge}</td>
             <td class="py-2 px-3 text-right font-mono text-white/80">${row.total_tokens ? row.total_tokens.toLocaleString() : '-'}</td>
-            <td class="py-2 px-3 text-right font-mono text-white/60">${row.duration_sec ? row.duration_sec.toFixed(2) + 's' : '-'}</td>
-            <td class="py-2 px-3 text-right font-mono font-semibold text-brand">$${row.cost_usd.toFixed(4)}</td>
+            <td class="py-2 px-3 text-right font-mono text-white/60">${row.duration_sec ? Number(row.duration_sec).toFixed(2) + 's' : '-'}</td>
+            <td class="py-2 px-3 text-right font-mono font-semibold text-brand">$${costVal.toFixed(4)}</td>
             <td class="py-2 px-3 text-center">
               <span class="inline-block px-1.5 py-0.5 rounded font-mono text-[10px] font-bold ${isOk ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/10 text-red-400 border border-red-500/30'}">
                 ${row.status_code}
@@ -544,13 +820,88 @@
       searchDebounce = setTimeout(fetchLogs, 300);
     }
 
-    // Инициализация
-    window.addEventListener('DOMContentLoaded', () => {
+    // Toast уведомление
+    let toastTimer = null;
+    let lastExportPath = '';
+
+    function showToast(text, filePath = '') {
+      const t = document.getElementById('toast');
+      const txt = document.getElementById('toast-text');
+      const act = document.getElementById('toast-action');
+      txt.textContent = text;
+
+      if (filePath) {
+        lastExportPath = filePath;
+        act.classList.remove('hidden');
+        act.onclick = async () => {
+          await fetch('/api/export/open-file', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: lastExportPath })
+          });
+        };
+      } else {
+        act.classList.add('hidden');
+      }
+
+      t.classList.remove('translate-y-16', 'opacity-0', 'pointer-events-none');
+      t.classList.add('translate-y-0', 'opacity-100', 'pointer-events-auto');
+
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        t.classList.add('translate-y-16', 'opacity-0', 'pointer-events-none');
+        t.classList.remove('translate-y-0', 'opacity-100', 'pointer-events-auto');
+      }, 7000);
+    }
+
+    async function exportExcel() {
+      const btn = document.getElementById('btn-export-excel');
+      const origHtml = btn.innerHTML;
+      btn.innerHTML = '<i data-lucide="loader-2" class="h-3.5 w-3.5 animate-spin"></i><span>...</span>';
       lucide.createIcons();
+
+      try {
+        const { from } = getPeriodRange(currentPeriod);
+        const params = new URLSearchParams({ scope: 'cloud' });
+        if (from) params.append('date_from', from);
+        if (currentUser && currentUser !== 'all') params.append('user_name', currentUser);
+
+        // Сохраняем ровно 1 файл напрямую в Загрузки через бэкенд
+        const saveRes = await fetch(`/api/export/save-to-downloads?${params.toString()}`, { method: 'POST' });
+        if (!saveRes.ok) throw new Error('Не удалось сформировать отчёт');
+
+        const data = await saveRes.json();
+        const savedPath = data.path || '';
+        const filename = data.filename || 'отчёт Excel';
+
+        showToast(`Отчёт сохранён в Загрузки: ${filename}`, savedPath);
+      } catch (err) {
+        alert('Ошибка при экспорте: ' + err.message);
+      } finally {
+        btn.innerHTML = origHtml;
+        lucide.createIcons();
+      }
+    }
+
+    // Инициализация
+    window.addEventListener('DOMContentLoaded', async () => {
+      lucide.createIcons();
+      await checkUserProfile();
       fetchData();
-      // Автообновление каждые 6 секунд
-      setInterval(fetchData, 6000);
+      // Автообновление каждые 8 секунд
+      setInterval(fetchData, 8000);
     });
   </script>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="fixed bottom-6 right-6 z-50 transform translate-y-16 opacity-0 transition-all duration-300 pointer-events-none flex items-center gap-3 px-4 py-3 rounded-2xl bg-[#141419] border border-brand/50 text-white shadow-2xl text-xs backdrop-blur-md">
+    <div class="flex h-7 w-7 items-center justify-center rounded-xl bg-brand/20 text-brand shrink-0">
+      <i data-lucide="check" class="h-4 w-4"></i>
+    </div>
+    <span id="toast-text" class="font-medium max-w-[280px] truncate">Отчёт сохранён</span>
+    <button id="toast-action" class="hidden ml-1 px-3 py-1.5 rounded-xl bg-brand text-black font-bold text-xs hover:bg-brand/90 transition pointer-events-auto cursor-pointer shadow-sm">
+      Открыть
+    </button>
+  </div>
 </body>
 </html>

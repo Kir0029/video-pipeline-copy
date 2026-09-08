@@ -183,7 +183,9 @@ def test_local_synth_all_kinds() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generate_sfx_files_local(tmp_path) -> None:
+async def test_generate_sfx_files_local(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.settings import settings
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "")
     project = SimpleNamespace(id=1, meta={}, data_dir=tmp_path)
     session = MagicMock()
     session.flush = MagicMock(return_value=None)

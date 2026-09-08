@@ -299,6 +299,18 @@ async def reset_project_step(
     p = _project_or_404(await session.get(Project, project_id))
     try:
         summary = await reset_step(session, p, step_code)
+        if p.data_dir:
+            from app.project_db import resolve_project_db_path, project_session_scope
+            db_path = resolve_project_db_path(p.data_dir)
+            if db_path.exists():
+                try:
+                    async with project_session_scope(p.data_dir) as p_sess:
+                        p_in_proj = await p_sess.get(Project, project_id)
+                        if p_in_proj:
+                            await reset_step(p_sess, p_in_proj, step_code)
+                            await p_sess.commit()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("reset_project_step #{}: reset project.db failed: {}", project_id, exc)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if summary.get("error"):
@@ -310,6 +322,11 @@ async def reset_project_step(
     await session.flush()
     await session.commit()
     await session.refresh(p)
+    from app.project_db import sync_project_row_to_project_db
+    try:
+        await sync_project_row_to_project_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("reset_project_step #{}: sync to project.db failed: {}", project_id, exc)
     await sync_run_for_project(project_id)
     await session.refresh(p)
     await publish_project_event(

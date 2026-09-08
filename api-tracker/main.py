@@ -109,6 +109,9 @@ def main():
     try:
         import webview
 
+        # Разрешаем скачивание файлов в WebView2
+        webview.settings["ALLOW_DOWNLOADS"] = True
+
         has_webview = True
         window = webview.create_window(
             title="API Tracker & Cost Monitor",
