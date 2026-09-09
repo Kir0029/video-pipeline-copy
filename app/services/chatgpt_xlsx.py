@@ -154,16 +154,23 @@ def _get_master_or_fallback(project: Project, step_code: str, fallback: str) -> 
         return fallback
 
 
-# Footer для plan: DB/текст SoT (не xlsx/TSV). См. docs/PROMPT_CONTRACT.md.
+# Footer для plan: DB SoT (apply-ops JSON). См. docs/PROMPT_CONTRACT.md.
 PLAN_XLSX_OUTPUT_FOOTER = (
     "\n\n---\n"
     "ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ВЫВОДА (план проекта):\n"
-    "1. Верни развёрнутый общий план ролика текстом "
-    "(не короче ~200 символов).\n"
-    '2. Можно обернуть в JSON {"general_plan":"…"} '
-    "или просто связный текст плана.\n"
-    "3. Не прикладывай xlsx и не используй блоки TSV «# Лист:…» — "
-    "данные пишутся в DB проекта, Excel только экспорт.\n"
+    "Верни результат СТРОГО в формате JSON apply-ops (без TSV, без скачивания файлов, без лишней прозы вокруг JSON):\n"
+    "```json\n"
+    "{\n"
+    '  "ops": [\n'
+    '    {\n'
+    '      "target": "project",\n'
+    '      "fields": {\n'
+    '        "общий_план": "<полный текст сценария и общий план ролика (не менее 200 символов)>"\n'
+    '      }\n'
+    '    }\n'
+    '  ]\n'
+    "}\n"
+    "```\n"
 )
 
 

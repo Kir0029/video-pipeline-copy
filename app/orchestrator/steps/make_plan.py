@@ -43,6 +43,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     )
 
     try:
+        _sheet_for_project(project).write_general(
+            topic=project.topic,
+            slug=project.slug,
+            hero_mode=project.hero_mode,
+            status=ProjectStatus.plan_ready.value,
+            general_plan=plan_text,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] project_sheet plan write failed: {}", project.id, e)
+
+    try:
         from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
 
         await snapshot_and_bind_node_xlsx(session, project, node_type="plan")
@@ -60,18 +71,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     project.status = ProjectStatus.plan_ready
     await session.flush()
-
-    try:
-        _sheet_for_project(project).write_general(
-            topic=project.topic,
-            slug=project.slug,
-            hero_mode=project.hero_mode,
-            status=project.status.value,
-            general_plan=plan_text,
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("[#{}] project_sheet plan write failed: {}", project.id, e)
-
     await session.commit()
     from app.services.agent_harness import harness_gate_or_raise
 

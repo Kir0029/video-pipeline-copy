@@ -50,15 +50,15 @@ _ANALYSIS_NAMES: frozenset[str] = frozenset({"analysis.json"})
 BRANCHING_ROLES: frozenset[str] = frozenset({"review", "gate", "compare"})
 
 ROLE_DEFAULT_LABELS: dict[str, str] = {
-    "assist": "Работа с GPT",
-    "review": "Ок / не ок",
-    "transform": "Переделывает",
-    "extract": "Достаёт данные",
-    "compare": "Сравнивает",
-    "gate": "Ок / не ок",
+    "assist": "ИИ-редактор сцен",
+    "review": "ИИ-редактор сцен",
+    "transform": "ИИ-редактор сцен",
+    "extract": "ИИ-редактор сцен",
+    "compare": "ИИ-редактор сцен",
+    "gate": "ИИ-редактор сцен",
 }
 _DEFAULT_LABEL_SET: frozenset[str] = frozenset(
-    {*ROLE_DEFAULT_LABELS.values(), "Работа с GPT", ""}
+    {*ROLE_DEFAULT_LABELS.values(), "Работа с GPT", "Ок / не ок", ""}
 )
 
 _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
@@ -96,7 +96,7 @@ def is_verdict_edge_kind(kind: str) -> bool:
 
 
 def default_label_for_role(role: OperatorRole | str) -> str:
-    return ROLE_DEFAULT_LABELS.get(str(role), "Работа с GPT")
+    return ROLE_DEFAULT_LABELS.get(str(role), "ИИ-редактор сцен")
 
 
 def edge_kind_of(edge: dict[str, Any]) -> EdgeKind:
@@ -1569,13 +1569,6 @@ def patch_operator_config(project: Project, node_key: str, patch: dict[str, Any]
         cur["transport"] = t if t in ("api", "browser") else "api"
     if "label" in patch and patch["label"] is not None:
         cur["label"] = str(patch["label"])
-    elif role_changed:
-        # Автоподпись при смене роли, если текст ещё дефолтный / пустой.
-        prev_label = str(cur.get("label") or "").strip()
-        if prev_label in _DEFAULT_LABEL_SET:
-            cur["label"] = default_label_for_role(
-                normalize_role(cur.get("role") or "assist")
-            )
     if "uploadedFileNames" in patch and isinstance(patch["uploadedFileNames"], list):
         cur["uploadedFileNames"] = [str(x) for x in patch["uploadedFileNames"] if x]
         if cur["uploadedFileNames"]:

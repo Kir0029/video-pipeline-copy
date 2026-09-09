@@ -2,10 +2,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Save, ChevronDown, ChevronUp } from "lucide-react";
+import { Loader2, Save, ChevronDown, ChevronUp, Calculator } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
+import type { ProjectDetail } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -430,10 +431,12 @@ function AssembleFields({
 
 function SplitFields({
   params,
+  project,
   onSave,
   saving,
 }: {
   params: NodeStepParamsMeta;
+  project?: ProjectDetail | null;
   onSave: (patch: SplitStepParams) => void;
   saving: boolean;
 }) {
@@ -450,6 +453,29 @@ function SplitFields({
     setAvgMaxDraft(split.cell_avg_max?.toString() ?? "");
   }, [split.cell_avg_max, split.cell_avg_min, split.cell_max_chars, split.cell_min_chars]);
 
+  const generalPlan = (project?.general_plan || ((project?.meta as Record<string, unknown> | undefined)?.general_plan as string) || "").trim();
+  const scriptText = (project?.script_text || "").trim();
+  const charCount = scriptText.length;
+
+  const targetFrames = useMemo(() => {
+    if (!generalPlan) return null;
+    const matches = Array.from(generalPlan.matchAll(/(?:Кадр|кадр)\s*(\d+)/g)).map((m) => parseInt(m[1], 10));
+    if (matches.length > 0) return Math.max(...matches);
+    const m = generalPlan.match(/(\d+)\s*(?:кадр|кадров|кадра)/i);
+    if (m) return parseInt(m[1], 10);
+    return null;
+  }, [generalPlan]);
+
+  const calc = useMemo(() => {
+    if (!targetFrames || targetFrames <= 0 || charCount <= 0) return null;
+    const avg = Math.round(charCount / targetFrames);
+    const min = Math.max(10, Math.round(avg * 0.5));
+    const max = Math.max(40, Math.round(avg * 1.8));
+    const avgMin = Math.max(15, Math.round(avg * 0.8));
+    const avgMax = Math.max(25, Math.round(avg * 1.15));
+    return { avg, min, max, avgMin, avgMax };
+  }, [targetFrames, charCount]);
+
   const parseOpt = (s: string) => {
     const t = s.trim();
     if (!t) return null;
@@ -459,7 +485,41 @@ function SplitFields({
 
   return (
     <section className="flex flex-col gap-4 rounded-lg border border-white/10 bg-white/[0.02] p-4">
-      <h3 className="text-sm font-semibold text-foreground">Разбивка</h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-foreground">Разбивка</h3>
+      </div>
+
+      {calc && targetFrames ? (
+        <div className="flex flex-col gap-2 rounded-xl border border-cyan-500/30 bg-cyan-950/30 p-3 text-xs text-cyan-200 backdrop-blur-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-semibold text-cyan-100 flex items-center gap-1.5">
+              <Calculator className="h-3.5 w-3.5 text-cyan-400" />
+              Расчёт под сценарий ролика
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              className="h-7 px-3 text-xs bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-lg border border-cyan-400/40 shadow-sm shadow-cyan-500/20"
+              onClick={() => {
+                setMinDraft(calc.min.toString());
+                setMaxDraft(calc.max.toString());
+                setAvgMinDraft(calc.avgMin.toString());
+                setAvgMaxDraft(calc.avgMax.toString());
+                toast.success(
+                  `Подставлены параметры под ${targetFrames} кадров: ${calc.min} / ${calc.max} / ${calc.avgMin}–${calc.avgMax}`,
+                );
+              }}
+            >
+              Применить расчёт ({targetFrames} кадр.)
+            </Button>
+          </div>
+          <p className="text-cyan-200/80 leading-relaxed">
+            В сценарии <strong>{targetFrames} кадров</strong>, закадровый текст <strong>{charCount} знаков</strong>.
+            Средняя длина кадра: <strong>~{calc.avg} знаков (~{Math.round((calc.avg / 14) * 10) / 10} сек)</strong>.
+          </p>
+        </div>
+      ) : null}
+
       <NumField
         label="Минимальное количество символов в кадре"
         description="Стандартное значение: 30 символов (~2 сек озвучки)"
@@ -669,7 +729,7 @@ export function NodeStepParamsPanel({
         />
       ) : null}
       {step === "split" ? (
-        <SplitFields params={params} onSave={persist} saving={save.isPending} />
+        <SplitFields params={params} project={project.data} onSave={persist} saving={save.isPending} />
       ) : null}
       {step === "audio" ? (
         <AudioFields params={params} onSave={persist} saving={save.isPending} />

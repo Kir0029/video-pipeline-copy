@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  Sparkles,
   Loader2,
   CheckCircle2,
   FileCode,
@@ -182,9 +181,8 @@ export function MetaPromptDialog({
           type="button"
           size="sm"
           variant="outline"
-          className="gap-1.5 border-emerald-500/40 bg-emerald-500/10 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 shadow-sm transition-all"
+          className="gap-1.5 border-cyan-500/40 bg-cyan-500/10 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20 shadow-sm transition-all"
         >
-          <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
           Создать с ИИ-агентом
         </Button>
       </DialogTrigger>

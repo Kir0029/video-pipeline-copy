@@ -19,7 +19,7 @@ export type NodeCategory =
 export const NODE_CATEGORY_LABELS: Record<NodeCategory, string> = {
   planning: "Планирование",
   objects: "Герои и предметы",
-  enrich: "Работа с GPT",
+  enrich: "ИИ-редактор сцен",
   media: "Медиа",
   audio: "Аудио",
   assembly: "Сборка",
@@ -98,7 +98,7 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
   script: {
     type: "script",
     label: "Закадровый текст",
-    description: "Закадровый текст 1000–1300 знаков, кадровая разбивка.",
+    description: "Закадровый текст под хронометраж ролика (темп ~14 зн/сек).",
     category: "planning",
     accent: "190 70% 55%",
     iconKey: "script",
@@ -106,7 +106,7 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
   split: {
     type: "split",
     label: "Разбивка",
-    description: "Раскадровка на 15–30 кадров по 2–4 сек.",
+    description: "Кадровая раскадровка (длительность кадров 2–4 сек).",
     category: "planning",
     accent: "200 65% 58%",
     iconKey: "split",
@@ -156,9 +156,9 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
   },
   excel_gpt: {
     type: "excel_gpt",
-    label: "Работа с GPT",
+    label: "ИИ-редактор сцен",
     description:
-      "Оператор GPT: роли, файлы со стрелок, сверка с диском. API без браузера. Пульт — меню V.",
+      "ИИ-редактор сцен: роли, файлы со стрелок, сверка с диском. API без браузера. Пульт — меню V.",
     category: "enrich",
     accent: "270 55% 64%",
     iconKey: "sparkles",

@@ -41,7 +41,7 @@ export function GptOperatorCardPanel({
         <Bot className="h-4 w-4 shrink-0 text-violet-400" />
         <span className="min-w-0 flex-1">
           <span className="block text-xs sm:text-[13px] font-bold text-zinc-100">
-            Пульт оператора GPT
+            Пульт оператора
           </span>
           <span className="mt-1 block text-[11px] sm:text-xs text-zinc-300 font-medium leading-normal">
             {roleChip(data?.role)}

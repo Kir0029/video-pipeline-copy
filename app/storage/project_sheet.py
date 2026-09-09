@@ -43,6 +43,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import threading
 from datetime import datetime
@@ -319,7 +320,7 @@ class ProjectSheet:
     # ---- общий план / сценарий -----------------------------------------
 
     def write_general(self, **fields: Any) -> None:
-        """Пишет произвольные пары (label, value) на лист «Общий план ролика».
+        """Пишет произвольные пары (label, value) на лист «Общий план ролика» (legacy) или «Общий план» (v8).
 
         Известные ключи:
           topic, slug, hero_mode, status, general_plan, script_text,
@@ -344,36 +345,127 @@ class ProjectSheet:
         ]
         with _file_lock(self.file_path):
             wb = self._open()
-            if SHEET_GENERAL not in wb.sheetnames:
-                # v8-шаблон: листа "Общий план ролика" нет — данные общего
-                # уровня сидят в листе "Общий план" и заполняются GPT-ом,
-                # поэтому write_general для v8 — no-op.
+            target_sheet = None
+            if SHEET_GENERAL in wb.sheetnames:
+                target_sheet = SHEET_GENERAL
+            elif "Общий план" in wb.sheetnames:
+                target_sheet = "Общий план"
+
+            if not target_sheet:
                 return
-            self._ensure_layout(wb)
-            ws = wb[SHEET_GENERAL]
-            existing: dict[str, int] = {}
-            for r in range(1, ws.max_row + 1):
-                v = ws.cell(row=r, column=1).value
-                if isinstance(v, str) and v:
-                    existing[v] = r
 
-            def _put(label: str, value: Any) -> None:
-                row = existing.get(label)
-                if row is None:
-                    row = (ws.max_row or 0) + 1
-                    ws.cell(row=row, column=1, value=label)
-                    existing[label] = row
-                ws.cell(row=row, column=2, value=_stringify(value))
+            def _safe_set(ws_obj: Any, row: int, col: int, value: Any) -> None:
+                cell = ws_obj.cell(row=row, column=col)
+                if type(cell).__name__ == "MergedCell":
+                    for rng in ws_obj.merged_cells.ranges:
+                        if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
+                            ws_obj.cell(row=rng.min_row, column=rng.min_col, value=_stringify(value))
+                            return
+                else:
+                    cell.value = _stringify(value)
 
-            for key, label in labels_order:
-                if key in fields and fields[key] is not None:
-                    _put(label, fields[key])
-            for key, value in fields.items():
-                if value is None:
-                    continue
-                if any(k == key for k, _ in labels_order):
-                    continue
-                _put(key, value)
+            if target_sheet == SHEET_GENERAL:
+                self._ensure_layout(wb)
+                ws = wb[SHEET_GENERAL]
+                existing: dict[str, int] = {}
+                for r in range(1, ws.max_row + 1):
+                    v = ws.cell(row=r, column=1).value
+                    if isinstance(v, str) and v:
+                        existing[v] = r
+
+                def _put(label: str, value: Any) -> None:
+                    row = existing.get(label)
+                    if row is None:
+                        row = (ws.max_row or 0) + 1
+                        ws.cell(row=row, column=1, value=label)
+                        existing[label] = row
+                    ws.cell(row=row, column=2, value=_stringify(value))
+
+                for key, label in labels_order:
+                    if key in fields and fields[key] is not None:
+                        _put(label, fields[key])
+                for key, value in fields.items():
+                    if value is None:
+                        continue
+                    if any(k == key for k, _ in labels_order):
+                        continue
+                    _put(key, value)
+            else:
+                # v8-шаблон: лист "Общий план"
+                ws = wb["Общий план"]
+                existing_v8: dict[str, int] = {}
+                for r in range(1, ws.max_row + 1):
+                    v = ws.cell(row=r, column=1).value
+                    if isinstance(v, str) and v.strip():
+                        existing_v8[v.strip().lower()] = r
+
+                # Главная тема (B2)
+                topic_val = fields.get("topic")
+                if topic_val:
+                    r_topic = existing_v8.get("главная тема", 2)
+                    _safe_set(ws, r_topic, 2, topic_val)
+
+                # Сценарий / общий план
+                plan_val = fields.get("general_plan")
+                if plan_val:
+                    plan_str = str(plan_val).strip()
+                    dram_m = re.search(
+                        r"1\.\s*ОБЩАЯ ДРАМАТУРГИЧЕСКАЯ ИДЕЯ\s*\n+(.*?)(?=\n+2\.|\Z)",
+                        plan_str,
+                        re.DOTALL | re.IGNORECASE,
+                    )
+                    dram_idea = dram_m.group(1).strip() if dram_m else plan_str
+
+                    sentences = [
+                        s.strip()
+                        for s in re.split(r"(?<=[.!?])\s+", dram_idea)
+                        if s.strip()
+                    ]
+                    main_idea = sentences[0] if len(sentences) > 0 else dram_idea
+                    main_thought = sentences[1] if len(sentences) > 1 else main_idea
+                    meaning = (
+                        " ".join(sentences[2:]) if len(sentences) > 2 else main_idea
+                    )
+
+                    r_thought = existing_v8.get("главная мысль", 3)
+                    _safe_set(ws, r_thought, 2, main_thought)
+                    r_meaning = existing_v8.get("смысл для зрителя", 4)
+                    _safe_set(ws, r_meaning, 2, meaning if meaning else main_idea)
+
+                    # Блоки сюжета (строки 8..14)
+                    blocks_m = re.search(
+                        r"3\.\s*СТРУКТУРА СЮЖЕТА\s*\n+(.*?)(?=\n+4\.|\Z)",
+                        plan_str,
+                        re.DOTALL | re.IGNORECASE,
+                    )
+                    if blocks_m:
+                        b_lines = [
+                            l.strip().lstrip("-*• ")
+                            for l in blocks_m.group(1).strip().splitlines()
+                            if l.strip()
+                        ]
+                        for idx, b_line in enumerate(b_lines):
+                            r_idx = 8 + idx
+                            if r_idx <= 14:
+                                parts = b_line.split(":", 1)
+                                title = parts[0].strip()
+                                desc = parts[1].strip() if len(parts) > 1 else ""
+                                _safe_set(ws, r_idx, 1, title)
+                                _safe_set(ws, r_idx, 2, desc)
+
+                    # Поэпизодный план (строки 17..)
+                    frames_found = re.findall(
+                        r"Кадр\s+(\d+)\s*\(([^)]+)\)\s*:\s*(.*?)(?=\n+Кадр\s+\d+|\n+Закадровый текст|\Z)",
+                        plan_str,
+                        re.DOTALL | re.IGNORECASE,
+                    )
+                    if frames_found:
+                        for idx, (f_num, tc, desc) in enumerate(frames_found):
+                            r_idx = 17 + idx
+                            _safe_set(ws, r_idx, 1, f"Кадр {f_num}")
+                            _safe_set(ws, r_idx, 2, tc.strip())
+                            _safe_set(ws, r_idx, 4, desc.strip())
+
             self._save(wb)
 
     # ---- per-frame ------------------------------------------------------

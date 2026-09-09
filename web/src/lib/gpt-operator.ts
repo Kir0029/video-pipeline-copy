@@ -214,12 +214,12 @@ export const EMIT_OPTIONS: {
 export const BRANCHING_ROLES: OperatorRole[] = ["review", "gate", "compare"];
 
 export const ROLE_DEFAULT_LABELS: Record<OperatorRole, string> = {
-  assist: "Работа с GPT",
-  review: "Ок / не ок",
-  transform: "Переделывает",
-  extract: "Достаёт данные",
-  compare: "Сравнивает",
-  gate: "Ок / не ок",
+  assist: "ИИ-редактор сцен",
+  review: "ИИ-редактор сцен",
+  transform: "ИИ-редактор сцен",
+  extract: "ИИ-редактор сцен",
+  compare: "ИИ-редактор сцен",
+  gate: "ИИ-редактор сцен",
 };
 
 export const OPERATOR_MENU_ACTIONS = [
@@ -277,7 +277,7 @@ export function roleChip(role?: string | null): string {
 
 export function defaultLabelForRole(role?: string | null): string {
   const r = (role || "assist") as OperatorRole;
-  return ROLE_DEFAULT_LABELS[r] ?? "Работа с GPT";
+  return ROLE_DEFAULT_LABELS[r] ?? "ИИ-редактор сцен";
 }
 
 export function isBranchingRole(role?: string | null): boolean {

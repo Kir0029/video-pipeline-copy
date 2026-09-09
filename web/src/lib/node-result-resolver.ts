@@ -286,24 +286,22 @@ function computeNodeResult(
     case "plan":
     case "hitl_gate": {
       const planText = meaningfulGeneralPlan(project);
-      if (planText && projectHasXlsx(ctx.assets)) {
+      if (planText) {
+        const items: NodeResultItem[] = [
+          { id: "general_plan", label: "Сценарий (текст)", kind: "text", content: planText },
+        ];
+        if (projectHasXlsx(ctx.assets)) {
+          items.push({ id: "xlsx_general", label: "Сценарий (Excel)", kind: "xlsx" });
+        }
         return {
           hasResult: true,
-          itemCount: 1,
-          summary: "Лист «Общий план» в Excel",
-          items: [{ id: "xlsx_general", label: "Сценарий (Excel)", kind: "xlsx" }],
-          replaceMode: "xlsx",
+          itemCount: items.length,
+          summary: `Сценарий готов (${planText.length} симв.)`,
+          items,
+          replaceMode: "text",
           viewMode: "xlsx_general_plan",
+          textField: "general_plan",
         };
-      }
-      if (planText) {
-        return ready(
-          [{ id: "general_plan", label: "Сценарий", kind: "text", content: planText }],
-          "Текст плана готов",
-          "text",
-          "xlsx_general_plan",
-          "general_plan",
-        );
       }
       return empty("Сценарий ещё не сгенерирован", "text", "xlsx_general_plan");
     }

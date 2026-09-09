@@ -2,7 +2,20 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Download, Loader2, Maximize2, Replace, Upload } from "lucide-react";
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Download,
+  FileSpreadsheet,
+  FileText,
+  Loader2,
+  Maximize2,
+  Replace,
+  Save,
+  Upload,
+} from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
@@ -39,6 +52,7 @@ export function NodeResultViewBody({
           projectId={projectId}
           nodeKey={nodeKey}
           nodeType={nodeType}
+          snapshot={snapshot}
         />
       );
     case "voiceover_wide":
@@ -199,11 +213,14 @@ function GeneralPlanSheetView({
   projectId,
   nodeKey,
   nodeType,
+  snapshot,
 }: {
   projectId: number;
   nodeKey?: string | null;
   nodeType?: string | null;
+  snapshot?: NodeResultSnapshot;
 }) {
+  const qc = useQueryClient();
   const project = useQuery({
     queryKey: ["project", projectId],
     queryFn: () => api.getProject(projectId),
@@ -230,58 +247,198 @@ function GeneralPlanSheetView({
     enabled: Boolean(sheet),
   });
 
-  if (meta.isLoading || grid.isLoading) return <LoadingBlock />;
+  const rawPlanText =
+    project.data?.general_plan?.trim() ||
+    snapshot?.items.find((i) => i.kind === "text")?.content?.trim() ||
+    "";
+  const [text, setText] = useState(rawPlanText);
+  const [dirty, setDirty] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [activeTab, setActiveTab] = useState<"text" | "table">("text");
 
-  if (!sheet || !grid.data?.rows?.length) {
-    const planText = project.data?.general_plan?.trim();
-    return (
-      <div className="flex flex-col gap-3">
-        <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} nodeType={nodeType} />
-        {planText ? (
-          <div className="rounded-lg border border-white/10 bg-black/20 p-4">
-            <p className="mb-2 text-xs text-muted-foreground">Текст плана (из БД)</p>
-            <p className="whitespace-pre-wrap text-sm leading-relaxed">{planText}</p>
-          </div>
-        ) : (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            Лист «Общий план» пока пуст или Excel ещё не создан.
-          </p>
-        )}
-      </div>
-    );
-  }
+  useEffect(() => {
+    if (!dirty && rawPlanText) {
+      setText(rawPlanText);
+    }
+  }, [rawPlanText, dirty]);
 
+  const save = useMutation({
+    mutationFn: (body: string) =>
+      api.patchProject(projectId, { general_plan: body }),
+    onSuccess: (updated) => {
+      const saved = (updated.general_plan ?? text).trim();
+      setText(saved);
+      setDirty(false);
+      qc.setQueryData(["project", projectId], updated);
+      qc.invalidateQueries({ queryKey: ["xlsx-general-plan"] });
+      toast.success("Сценарий сохранён");
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
+  const handleCopy = async () => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      toast.success("Сценарий скопирован в буфер обмена");
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("Не удалось скопировать текст");
+    }
+  };
+
+  if (project.isLoading && !rawPlanText) return <LoadingBlock />;
+
+  const charCount = text.length;
+  const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
   const snapLabel = grid.data?.xlsx_snapshot || meta.data?.xlsx_snapshot;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} nodeType={nodeType} />
-      {snapLabel ? (
-        <p className="mb-1 text-[10px] text-muted-foreground">
-          Снимок ноды: {snapLabel}
-        </p>
-      ) : null}
-      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-white/10 bg-black/20">
-      <table className="min-w-max border-collapse text-left text-xs">
-        <tbody>
-          {grid.data.rows.map((row, ri) => (
-            <tr key={ri} className="border-b border-white/5 hover:bg-white/[0.02]">
-              <td className="sticky left-0 z-10 border-r border-white/10 bg-card/95 px-2 py-1.5 text-[10px] text-muted-foreground">
-                {ri + 1}
-              </td>
-              {row.map((cell, ci) => (
-                <td
-                  key={ci}
-                  className="max-w-[320px] min-w-[80px] whitespace-pre-wrap border-r border-white/5 px-2 py-1.5 align-top"
-                >
-                  {cell || "\u00a0"}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-        </table>
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2">
+        <div className="flex items-center gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className={cn(
+              "h-8 gap-1.5 rounded-lg px-3 text-xs font-medium transition-all",
+              activeTab === "text"
+                ? "bg-zinc-800 text-zinc-100 border border-zinc-700 shadow-sm"
+                : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50",
+            )}
+            onClick={() => setActiveTab("text")}
+          >
+            <FileText className="h-3.5 w-3.5 text-teal-400" />
+            Сценарий (текст)
+            {charCount > 0 && (
+              <span className="ml-1 rounded bg-zinc-700/60 px-1.5 py-0.5 text-[10px] text-zinc-300">
+                {charCount.toLocaleString("ru-RU")} симв.
+              </span>
+            )}
+          </Button>
+
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className={cn(
+              "h-8 gap-1.5 rounded-lg px-3 text-xs font-medium transition-all",
+              activeTab === "table"
+                ? "bg-zinc-800 text-zinc-100 border border-zinc-700 shadow-sm"
+                : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50",
+            )}
+            onClick={() => setActiveTab("table")}
+          >
+            <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-400" />
+            Таблица Excel
+            {sheet && (
+              <span className="ml-1 rounded bg-zinc-700/60 px-1.5 py-0.5 text-[10px] text-zinc-300">
+                {sheet}
+              </span>
+            )}
+          </Button>
+        </div>
+
+        {activeTab === "text" && text && (
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-zinc-400">
+              {wordCount} слов
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1"
+              onClick={handleCopy}
+            >
+              {copied ? (
+                <Check className="h-3 w-3 text-emerald-400" />
+              ) : (
+                <Copy className="h-3 w-3" />
+              )}
+              {copied ? "Скопировано" : "Копировать"}
+            </Button>
+            {dirty && (
+              <Button
+                size="sm"
+                className="h-7 text-xs gap-1 bg-teal-600 hover:bg-teal-500 text-white"
+                disabled={save.isPending}
+                onClick={() => save.mutate(text)}
+              >
+                {save.isPending ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Replace className="h-3 w-3" />
+                )}
+                Сохранить
+              </Button>
+            )}
+          </div>
+        )}
       </div>
+
+      {activeTab === "text" ? (
+        text ? (
+          <div className="flex min-h-0 flex-1 flex-col gap-2">
+            <Textarea
+              value={text}
+              onChange={(e) => {
+                setText(e.target.value);
+                setDirty(true);
+              }}
+              className="min-h-[420px] flex-1 resize-none rounded-lg border border-white/10 bg-black/40 p-4 font-mono text-xs leading-relaxed text-zinc-200 focus-visible:ring-1 focus-visible:ring-teal-500"
+              placeholder="Сценарий ролика..."
+            />
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center py-16 text-center text-zinc-400">
+            <FileText className="mb-2 h-8 w-8 text-zinc-600" />
+            <p className="text-sm font-medium">Сценарий ещё не сгенерирован</p>
+            <p className="text-xs text-zinc-500 mt-1">
+              Запустите ноду «Сценарий» для создания плана ролика
+            </p>
+          </div>
+        )
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} nodeType={nodeType} />
+          {snapLabel ? (
+            <p className="mb-1 text-[10px] text-muted-foreground">
+              Снимок ноды: {snapLabel}
+            </p>
+          ) : null}
+          {grid.isLoading ? (
+            <LoadingBlock />
+          ) : !sheet || !grid.data?.rows?.length ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              Лист «Общий план» пуст или Excel ещё не загружен.
+            </p>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-white/10 bg-black/20">
+              <table className="min-w-max border-collapse text-left text-xs">
+                <tbody>
+                  {grid.data.rows.map((row, ri) => (
+                    <tr key={ri} className="border-b border-white/5 hover:bg-white/[0.02]">
+                      <td className="sticky left-0 z-10 border-r border-white/10 bg-card/95 px-2 py-1.5 text-[10px] text-muted-foreground">
+                        {ri + 1}
+                      </td>
+                      {row.map((cell, ci) => (
+                        <td
+                          key={ci}
+                          className="max-w-[320px] min-w-[80px] whitespace-pre-wrap border-r border-white/5 px-2 py-1.5 align-top"
+                        >
+                          {cell || "\u00a0"}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -328,6 +485,20 @@ function VoiceoverWideView({
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      toast.success("Закадровый текст скопирован в буфер");
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("Не удалось скопировать текст");
+    }
+  };
+
   if (fileText.isLoading && !text) return <LoadingBlock />;
   if (fileText.isError && !text) {
     return (
@@ -337,52 +508,99 @@ function VoiceoverWideView({
     );
   }
 
+  const charCount = text.length;
+  const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+  const estSeconds = Math.round(charCount / 14);
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
-      
-      <div className="flex shrink-0 flex-wrap gap-2">
-        {fileItem?.downloadUrl && (
-          <Button size="sm" variant="outline" asChild>
-            <a href={fileItem.downloadUrl} download target="_blank" rel="noreferrer">
-              <Download className="h-3.5 w-3.5" />
-              Скачать voiceover.txt
-            </a>
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {fileItem?.downloadUrl && (
+            <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" asChild>
+              <a href={fileItem.downloadUrl} download target="_blank" rel="noreferrer">
+                <Download className="h-3.5 w-3.5" />
+                Скачать voiceover.txt
+              </a>
+            </Button>
+          )}
+          <Button
+            size="sm"
+            className="h-8 gap-1.5 text-xs bg-teal-600 hover:bg-teal-500 text-white shadow-sm"
+            disabled={save.isPending}
+            onClick={() => save.mutate(text)}
+          >
+            {save.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Save className="h-3.5 w-3.5" />
+            )}
+            Сохранить текст
           </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 gap-1.5 text-xs"
+            onClick={handleCopy}
+          >
+            {copied ? (
+              <Check className="h-3.5 w-3.5 text-emerald-400" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
+            {copied ? "Скопировано" : "Копировать"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 gap-1.5 text-xs"
+            onClick={() => fileRef.current?.click()}
+          >
+            <Upload className="h-3.5 w-3.5" />
+            Загрузить файл
+          </Button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".txt,text/plain"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              const reader = new FileReader();
+              reader.onload = () => {
+                const body = String(reader.result ?? "");
+                setText(body);
+                save.mutate(body);
+              };
+              reader.readAsText(f, "utf-8");
+              e.target.value = "";
+            }}
+          />
+        </div>
+
+        {charCount > 0 && (
+          <div className="flex items-center gap-2 text-xs text-zinc-400">
+            <span className="rounded bg-zinc-800 px-2 py-0.5 text-[11px] font-medium text-teal-300 border border-zinc-700/60">
+              {charCount.toLocaleString("ru-RU")} симв.
+            </span>
+            <span className="text-[11px] text-zinc-400">
+              {wordCount} слов
+            </span>
+            <span className="text-[11px] text-zinc-500">
+              ≈ {estSeconds} сек (14 зн/сек)
+            </span>
+          </div>
         )}
-        <Button size="sm" disabled={save.isPending} onClick={() => save.mutate(text)}>
-          {save.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Replace className="h-3.5 w-3.5" />}
-          Сохранить текст
-        </Button>
-        <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
-          <Upload className="h-3.5 w-3.5" />
-          Загрузить файл
-        </Button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".txt,text/plain"
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (!f) return;
-            const reader = new FileReader();
-            reader.onload = () => {
-              const body = String(reader.result ?? "");
-              setText(body);
-              save.mutate(body);
-            };
-            reader.readAsText(f, "utf-8");
-            e.target.value = "";
-          }}
-        />
       </div>
+
       <Textarea
         value={text}
         onChange={(e) => {
           setText(e.target.value);
           setDirty(true);
         }}
-        className="min-h-[65vh] flex-1 resize-none font-mono text-sm leading-relaxed"
+        className="min-h-[55vh] flex-1 resize-none rounded-lg border border-white/10 bg-black/40 p-4 font-mono text-xs leading-relaxed text-zinc-200 focus-visible:ring-1 focus-visible:ring-teal-500"
         placeholder="Закадровый текст…"
       />
     </div>

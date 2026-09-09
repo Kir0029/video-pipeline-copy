@@ -208,7 +208,7 @@ export function NodeVMenu({
       <div className="rounded-2xl border border-white/12 bg-gradient-to-b from-[hsl(240_8%_9%/0.98)] to-[hsl(240_10%_5%/0.99)] p-3 shadow-2xl shadow-black/60 backdrop-blur-xl">
         <div className="sticky top-0 z-10 mb-2 flex items-center justify-between gap-2 rounded-lg bg-[hsl(240_8%_9%/0.95)] pb-1">
           <span className="text-[10px] font-semibold uppercase tracking-widest text-sky-300/90">
-            {isGptOp ? "Работа с GPT" : "Меню ноды"}
+            {isGptOp ? "ИИ-редактор сцен" : "Меню ноды"}
           </span>
           <button
             type="button"

@@ -16,7 +16,7 @@ function isLegacyEnrichLabel(label: string | undefined): boolean {
   );
 }
 
-const EXCEL_GPT_DEFAULT_LABEL = "Работа с GPT";
+const EXCEL_GPT_DEFAULT_LABEL = "ИИ-редактор сцен";
 
 function defaultExcelGptLabel(_slot: number): string {
   return EXCEL_GPT_DEFAULT_LABEL;

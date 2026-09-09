@@ -108,7 +108,7 @@ def is_legacy_enrich_label(label: str | None) -> bool:
 
 
 def default_excel_gpt_label(_slot: int) -> str:
-    return "Работа с GPT"
+    return "ИИ-редактор сцен"
 
 
 def legacy_enrich_slot_from_type(node_type: str) -> int | None:

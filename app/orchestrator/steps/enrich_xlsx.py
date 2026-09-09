@@ -1966,7 +1966,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         ops_list,
                         characters=chars_list or None,
                         scenes=scenes_list or None,
-                        export_xlsx=bool(ops_data.get("export_xlsx", False)),
+                        export_xlsx=True,
                         node_kind=apply_node_kind,
                     )
                     await session.commit()
@@ -2104,6 +2104,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 api_res.analysis.to_dict() if getattr(api_res, "analysis", None) else None
             ),
         )
+        if getattr(api_res, "reply_text", None):
+            save_gpt_reply_text(project, node_key, api_res.reply_text)
+        await session.flush()
         ready_status = _SLOT_MAP[slot_idx][1]
         running_status = _SLOT_MAP[slot_idx][0]
         # status мог уйти в generating_* пока шёл долгий API-check

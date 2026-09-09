@@ -7,6 +7,7 @@ GPT-сессия (browser → new_conversation → ask_with_files → download) 
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -255,10 +256,15 @@ _PLAN_DB_HINT = (
 
 
 def extract_general_plan_from_gpt_reply(reply: str) -> str:
-    """Достать общий_план из apply-ops JSON ответа модели."""
-    from app.services import db_apply
+    """Достать общий_план из любого ответа модели: apply-ops JSON, простой JSON или связный текст."""
+    if not reply or not reply.strip():
+        return ""
 
-    data = db_apply.extract_apply_ops_json(reply or "")
+    from app.services import db_apply
+    from app.services.plan_validation import MIN_GENERAL_PLAN_CHARS
+
+    # 1. Проверяем стандартный apply-ops JSON
+    data = db_apply.extract_apply_ops_json(reply)
     if isinstance(data, dict):
         for op in data.get("ops") or []:
             if not isinstance(op, dict):
@@ -266,7 +272,7 @@ def extract_general_plan_from_gpt_reply(reply: str) -> str:
             fields = op.get("fields") or {}
             if not isinstance(fields, dict):
                 continue
-            for key in ("общий_план", "general_plan", "план", "сценарий"):
+            for key in ("общий_план", "general_plan", "план", "сценарий", "plan", "script"):
                 val = fields.get(key)
                 if isinstance(val, str) and val.strip():
                     return val.strip()
@@ -274,6 +280,52 @@ def extract_general_plan_from_gpt_reply(reply: str) -> str:
                 for val in fields.values():
                     if isinstance(val, str) and len(val.strip()) >= 80:
                         return val.strip()
+
+    # 2. Проверяем JSON без обёртки ops (например {"general_plan": "..."} или {"общий_план": "..."})
+    import json
+    import re
+
+    json_candidates: list[str] = []
+    for m in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", reply, re.DOTALL):
+        json_candidates.append(m.group(1))
+
+    first_brace = reply.find("{")
+    last_brace = reply.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        json_candidates.append(reply[first_brace : last_brace + 1])
+
+    for raw_json in json_candidates:
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, dict):
+                for key in (
+                    "общий_план",
+                    "general_plan",
+                    "план",
+                    "сценарий",
+                    "plan",
+                    "script",
+                    "content",
+                    "text",
+                ):
+                    val = parsed.get(key)
+                    if isinstance(val, str) and len(val.strip()) >= MIN_GENERAL_PLAN_CHARS:
+                        return val.strip()
+        except Exception:
+            continue
+
+    # 3. Fallback: если модель вернула связный текст сценария/плана напрямую
+    cleaned = reply.strip()
+    if cleaned.startswith("```") and cleaned.endswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+
+    if len(cleaned) >= MIN_GENERAL_PLAN_CHARS:
+        lower = cleaned.lower()
+        plan_keywords = ("план", "кадр", "сцена", "акт", "герой", "диктор", "voiceover", "shot", "act")
+        if any(kw in lower for kw in plan_keywords):
+            return cleaned
+
     return ""
 
 
@@ -417,11 +469,45 @@ async def run_script_xlsx(
             if voiceover_text:
                 break
     if not voiceover_text:
+        # Проверяем plain JSON без ops (например {"закадровый_текст": "..."} или {"voiceover": "..."})
+        import json
+        import re
+
+        json_candidates: list[str] = []
+        for m in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", reply or "", re.DOTALL):
+            json_candidates.append(m.group(1))
+        first_b = (reply or "").find("{")
+        last_b = (reply or "").rfind("}")
+        if first_b != -1 and last_b > first_b:
+            json_candidates.append((reply or "")[first_b : last_b + 1])
+
+        for raw_json in json_candidates:
+            try:
+                pj = json.loads(raw_json)
+                if isinstance(pj, dict):
+                    for k in (
+                        "закадровый_текст",
+                        "script_text",
+                        "voiceover",
+                        "текст",
+                        "text",
+                        "диктор",
+                    ):
+                        v = pj.get(k)
+                        if isinstance(v, str) and len(v.strip()) >= 80:
+                            voiceover_text = v.strip()
+                            break
+            except Exception:
+                continue
+            if voiceover_text:
+                break
+
+    if not voiceover_text:
         voiceover_text = (extract_voiceover_block(reply) or "").strip()
     if not voiceover_text:
         # Последний шанс: весь ответ, если это не голый JSON
         raw = (reply or "").strip()
-        if raw and '"ops"' not in raw[:40] and len(raw) >= 200:
+        if raw and '"ops"' not in raw[:40] and not raw.startswith("{") and len(raw) >= 200:
             voiceover_text = raw
     if len(voiceover_text) < 200:
         raise RuntimeError(
@@ -449,18 +535,43 @@ async def run_script_xlsx(
     )
 
 
-_SPLIT_DB_HINT = (
-    "\n\n# РАЗБИВКА — ИСТОЧНИК ПРАВДЫ БАЗА (НЕ Excel)\n"
-    "Верни ТОЛЬКО JSON apply-ops. Без TSV, без `# Лист:`, без `@row=`, "
-    "без скачивания .xlsx:\n"
-    '{"ops":[{"target":"replace_frames","frames":['
-    '{"закадр":"текст кадра 1","длительность":3},'
-    '{"закадр":"текст кадра 2"}'
-    "]}]}\n"
-    "ФОРМАТ SHORTS: для ролика 60–75 сек делай 15–25 кадров (максимум 30). "
-    "Запрещено дробить на микро-фразы по 1-2 слова. Один кадр = законченная мысль (2-4 сек озвучки). "
-    "Нужно ≥2 и ≤30 кадров. Каждый кадр — отдельный объект с полем закадр.\n"
-)
+def target_frames_from_project(project: Project | None) -> int:
+    """Извлекает ориентировочное число кадров из общего плана или параметров проекта (дефолт 30)."""
+    if project is None:
+        return 30
+    plan = str(getattr(project, "general_plan", "") or "")
+    if not plan and isinstance(project.meta, dict):
+        plan = str(project.meta.get("general_plan") or "")
+    nums = [int(m) for m in re.findall(r"(?:Кадр|кадр)\s*(\d+)", plan)]
+    if nums:
+        return max(nums)
+    m = re.search(r"(\d+)\s*(?:кадр|кадров|кадра)", plan)
+    if m:
+        return int(m.group(1))
+    return 30
+
+
+def build_split_db_hint(project: Project | None = None) -> str:
+    target_n = target_frames_from_project(project)
+    if target_n and target_n > 0:
+        fmt_text = f"ФОРМАТ: ориентируйся на структуру плана (~{target_n} кадров, по 2–4 сек озвучки на кадр)."
+    else:
+        fmt_text = "ФОРМАТ SHORTS: для ролика 60–75 сек делай 15–30 кадров (по 2–4 сек озвучки на кадр)."
+    return (
+        "\n\n# РАЗБИВКА — ИСТОЧНИК ПРАВДЫ БАЗА (НЕ Excel)\n"
+        "Верни ТОЛЬКО JSON apply-ops. Без TSV, без `# Лист:`, без `@row=`, "
+        "без скачивания .xlsx:\n"
+        '{"ops":[{"target":"replace_frames","frames":['
+        '{"закадр":"текст кадра 1","длительность":3},'
+        '{"закадр":"текст кадра 2"}'
+        "]}]}\n"
+        f"{fmt_text} "
+        "Запрещено дробить на микро-фразы по 1-2 слова. Один кадр = законченная мысль / клауза. "
+        "Каждый кадр — отдельный объект с полем закадр.\n"
+    )
+
+
+_SPLIT_DB_HINT = build_split_db_hint()
 
 
 def clamp_parent_frames(frames_spec: list[dict], max_frames: int = 30) -> list[dict]:
@@ -570,7 +681,7 @@ async def run_split_xlsx(
     prompt_file = cx.write_split_prompt_file(project, tmp_dir, ts=ts)
     chat_msg = (
         cx.chat_message(project, "split", prompt_file_name=prompt_file.name)
-        + _SPLIT_DB_HINT
+        + build_split_db_hint(project)
     )
 
     logger.info(
@@ -596,9 +707,11 @@ async def run_split_xlsx(
             '{"ops":[{"target":"replace_frames","frames":[...]}]}'
         )
 
-    frames_spec = clamp_parent_frames(frames_spec, max_frames=30)
+    target_n = target_frames_from_project(project)
+    max_frames_limit = max(35, target_n + 2)
+    frames_spec = clamp_parent_frames(frames_spec, max_frames=max_frames_limit)
     # GPT as-is → DB (≥2 кадров). Лимиты символов — только в prompt settings.
-    logger.info("split_db: кадров из GPT/fallback={}", len(frames_spec))
+    logger.info("split_db: кадров из GPT/fallback={} (target_n={}, max_limit={})", len(frames_spec), target_n, max_frames_limit)
     return XlsxRoundtripResult(
         reply_text=reply,
         downloaded_path=proj_xlsx,

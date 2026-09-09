@@ -395,6 +395,28 @@ async def patch_project(
     if "auto_mode" in payload:
         on_auto_mode_changed(p, was_auto=was_auto, now_auto=bool(p.auto_mode))
         flag_modified(p, "meta")
+    if "general_plan" in payload:
+        plan_text = (payload.get("general_plan") or "").strip()
+        lock_ui_field(p, "general_plan")
+        flag_modified(p, "meta")
+        xlsx = p.data_dir / "project.xlsx"
+        if xlsx.is_file():
+            try:
+                from app.storage.project_sheet import ProjectSheet
+
+                ProjectSheet(file_path=xlsx).write_general(
+                    topic=p.topic,
+                    slug=p.slug,
+                    hero_mode=p.hero_mode,
+                    status=p.status.value,
+                    general_plan=plan_text,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "patch_project #{}: write_general plan failed: {}",
+                    project_id,
+                    exc,
+                )
     if "script_text" in payload:
         text = (payload.get("script_text") or "").strip()
         save_voiceover_text(p, p.data_dir / "voiceover.txt", text)

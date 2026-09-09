@@ -69,9 +69,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     await session.flush()
 
     try:
-        _sheet_for_project(project).write_general(status=project.status.value)
+        _sheet_for_project(project).write_general(
+            status=project.status.value,
+            script_text=voiceover_text,
+        )
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] project_sheet status write failed: {}", project.id, e)
+
+    try:
+        from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
+
+        await snapshot_and_bind_node_xlsx(session, project, node_type="script")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] script xlsx snapshot bind failed: {}", project.id, e)
 
     try:
         from app.services.storage_step_sync import sync_storage_after_step

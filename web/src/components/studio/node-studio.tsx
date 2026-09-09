@@ -662,7 +662,7 @@ export function NodeStudio({
                         </>
                       )}
                     </Button>
-                    {!isThisNodeRunning && (
+                    {!isThisNodeRunning && !["plan", "script", "split", "assemble", "publish"].includes(nodeType) && (
                       <Button
                         size="sm"
                         onClick={() => runStep.mutate({ mode: "resume" })}
