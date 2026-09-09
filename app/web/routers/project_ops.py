@@ -27,7 +27,8 @@ from app.services.run_sync import (
 from app.services.chatgpt_xlsx import sync_project_xlsx
 from app.settings import settings
 from app.storage import ProjectSheet
-from app.web.deps import get_session
+from app.project_db import sync_project_row_to_master_db
+from app.web.deps import get_project_session, get_session
 from app.web.project_dto import project_to_detail
 from app.web.schemas import ProjectDetail
 
@@ -739,7 +740,7 @@ async def preview_xlsx(
 @router.get("/{project_id}/montage-board")
 async def montage_board(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Сетка монтажа: озвучка, персонажи, shot1/2 картинки и видео по кадрам."""
     p = _project_or_404(await session.get(Project, project_id))
@@ -747,7 +748,7 @@ async def montage_board(
 
     try:
         board = await build_montage_board(session, p)
-        # get_session не коммитит сам — без commit кэш R15/meta откатывается,
+        # get_project_session не коммитит сам — без commit кэш R15/meta откатывается,
         # и каждый GET снова пишет сотни кадров → database is locked + Failed to fetch.
         await session.commit()
         return board
@@ -765,7 +766,7 @@ async def montage_board(
 async def montage_board_save_queue(
     project_id: int,
     body: dict = Body(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Сохранить очередь pending_ops на сервер (без запуска apply).
 
@@ -830,6 +831,10 @@ async def montage_board_save_queue(
         board["video_trims"] = body["video_trims"]
     set_montage_meta(p, board)
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {"ok": True, "pending_ops": cleaned, "meta": public_board_meta(board)}
 
 
@@ -837,7 +842,7 @@ async def montage_board_save_queue(
 async def montage_board_apply(
     project_id: int,
     body: dict = Body(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Сохранить trim и выполнить очередь regen (без remount)."""
     from app.services.montage_board import build_montage_board
@@ -879,6 +884,10 @@ async def montage_board_apply(
         }
         set_montage_meta(p, board)
         await session.commit()
+        try:
+            await sync_project_row_to_master_db(p)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("sync_project_row_to_master_db failed: {}", exc)
         spawn_apply_job(project_id, video_trims=trims, pending_ops=ops)
         return {
             "started": True,
@@ -894,6 +903,10 @@ async def montage_board_apply(
         pending_ops=ops,
     )
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     await publish_project_event(
         project_id,
         event_type="project_updated",
@@ -910,7 +923,7 @@ async def montage_board_apply(
 @router.get("/{project_id}/montage-board/apply-status")
 async def montage_board_apply_status(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_board_apply_job import get_apply_job
 
@@ -921,7 +934,7 @@ async def montage_board_apply_status(
 @router.post("/{project_id}/montage-board/montage")
 async def montage_board_montage(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Кнопка «Монтаж» — remount-video в фоне (озвучка + FFmpeg)."""
     import asyncio
@@ -945,7 +958,7 @@ async def montage_board_montage(
 @router.get("/{project_id}/montage-board/montage-status")
 async def montage_board_montage_status(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_board_montage_job import get_montage_job
 
@@ -956,7 +969,7 @@ async def montage_board_montage_status(
 @router.post("/{project_id}/montage-board/recover-outsee")
 async def montage_board_recover_outsee(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Запускает фоновый скан Outsee → сохранение/замена кадров (кнопка не зависает)."""
     p = _project_or_404(await session.get(Project, project_id))
@@ -999,7 +1012,7 @@ async def montage_board_recover_outsee(
 @router.get("/{project_id}/montage-board/recover-outsee-status")
 async def montage_board_recover_outsee_status(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_outsee_recover_job import get_recover_job
 
@@ -1012,7 +1025,7 @@ async def montage_board_swap_shots(
     project_id: int,
     frame_number: int = Query(..., ge=1),
     kind: str = Query("both", pattern="^(image|video|both)$"),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Поменять местами shot1 ↔ shot2 (картинки и/или видео + промты)."""
     from app.services.montage_board_assets import swap_shot_media
@@ -1022,6 +1035,10 @@ async def montage_board_swap_shots(
         session, p, frame_number, kind=kind  # type: ignore[arg-type]
     )
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     if not result.get("ok"):
         raise HTTPException(
             status_code=400,
@@ -1038,7 +1055,7 @@ async def montage_board_swap_slots(
     a_shot: int = Query(..., ge=1, le=2),
     b_frame: int = Query(..., ge=1),
     b_shot: int = Query(..., ge=1, le=2),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Обмен двух слотов одного типа между любыми кадрами (кнопка↔кнопка в UI)."""
     from app.services.montage_board_assets import swap_media_slots
@@ -1054,6 +1071,10 @@ async def montage_board_swap_slots(
         b_shot=b_shot,
     )
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     if not result.get("ok"):
         raise HTTPException(
             status_code=400,
@@ -1069,7 +1090,7 @@ async def montage_board_move_image(
     from_shot: int = Query(..., ge=1, le=2),
     to_frame: int = Query(..., ge=1),
     to_shot: int = Query(..., ge=1, le=2),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Перенести картинку в другой слот (в т.ч. пустой); если цель занята — swap."""
     from app.services.montage_board_assets import move_scene_image
@@ -1084,6 +1105,10 @@ async def montage_board_move_image(
         to_shot=to_shot,
     )
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     if not result.get("ok"):
         raise HTTPException(
             status_code=400,
@@ -1097,7 +1122,7 @@ async def montage_board_delete_image(
     project_id: int,
     frame_number: int = Query(..., ge=1),
     shot: int = Query(1, ge=1, le=2),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_board_assets import delete_scene_image
     from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
@@ -1108,6 +1133,10 @@ async def montage_board_delete_image(
     mark_stale_videos(board, frame_number, shot=shot)
     set_montage_meta(p, board)
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {"ok": deleted, "frame_number": frame_number, "shot": shot}
 
 
@@ -1116,13 +1145,17 @@ async def montage_board_delete_video(
     project_id: int,
     frame_number: int = Query(..., ge=1),
     shot: int = Query(1, ge=1, le=2),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_board_assets import delete_scene_video
 
     p = _project_or_404(await session.get(Project, project_id))
     deleted = await delete_scene_video(session, p, frame_number, shot=shot)
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {"ok": deleted, "frame_number": frame_number, "shot": shot}
 
 
@@ -1132,7 +1165,7 @@ async def montage_board_upload_image(
     frame_number: int = Query(..., ge=1),
     shot: int = Query(1, ge=1, le=2),
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_board_assets import save_scene_image_upload
     from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
@@ -1149,6 +1182,10 @@ async def montage_board_upload_image(
     mark_stale_videos(board, frame_number, shot=shot)
     set_montage_meta(p, board)
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {
         "ok": True,
         "path": str(path),
@@ -1164,7 +1201,7 @@ async def montage_board_upload_video(
     frame_number: int = Query(..., ge=1),
     shot: int = Query(1, ge=1, le=2),
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_board_assets import save_scene_video_upload
     from app.services.montage_board_meta import clear_stale_video, montage_meta, set_montage_meta
@@ -1181,6 +1218,10 @@ async def montage_board_upload_video(
     clear_stale_video(board, frame_number, shot)
     set_montage_meta(p, board)
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {
         "ok": True,
         "path": str(path),
@@ -1194,7 +1235,7 @@ async def montage_board_upload_video(
 async def montage_board_upload_voice(
     project_id: int,
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Сохраняет озвучку как ``audio/voice_full.<ext>`` — так её видит монтаж/assemble."""
     from sqlalchemy.orm.attributes import flag_modified
@@ -1216,6 +1257,10 @@ async def montage_board_upload_voice(
     p.meta = meta
     flag_modified(p, "meta")
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {"ok": True, "path": str(dest), "filename": dest.name}
 
 
@@ -1223,7 +1268,7 @@ async def montage_board_upload_voice(
 async def montage_board_upload_music(
     project_id: int,
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Сохраняет BGM как ``music/bgm.<ext>`` — канон для resolve_bgm."""
     from sqlalchemy.orm.attributes import flag_modified
@@ -1244,6 +1289,10 @@ async def montage_board_upload_music(
     p.meta = meta
     flag_modified(p, "meta")
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {"ok": True, "path": str(dest), "filename": dest.name}
 
 

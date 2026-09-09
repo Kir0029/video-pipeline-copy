@@ -118,12 +118,32 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _db_path() -> Path:
+def _db_path(data_dir: Path | None = None, project_id: int | None = None) -> Path:
     """Путь к SQLite для raw-проверок harness.
 
-    Источник правды — ``settings.sqlite_path`` (тот же файл, что у приложения).
-    Опциональный ``settings.db_path`` оставлен для monkeypatch в тестах.
+    Приоритет:
+    1. Если передан data_dir и data_dir/project.db существует — используется он.
+    2. Если передан project_id и найден изолированный project.db — используется он.
+    3. Иначе — глобальный мастер (settings.sqlite_path / data/state.db).
     """
+    if data_dir is not None:
+        try:
+            pdb = Path(data_dir) / "project.db"
+            if pdb.is_file():
+                return pdb
+        except Exception:  # noqa: BLE001
+            pass
+
+    if project_id is not None:
+        try:
+            from app.project_db import resolve_project_db_path_by_id
+
+            pdb = resolve_project_db_path_by_id(project_id)
+            if pdb is not None and pdb.is_file():
+                return pdb
+        except Exception:  # noqa: BLE001
+            pass
+
     from app.settings import settings
 
     legacy = getattr(settings, "db_path", None)
@@ -232,9 +252,10 @@ def _count_project_log_errors(project_id: int, slug: str) -> tuple[int, str]:
 
 def _load_frame_prompt_rows(
     project_id: int,
+    data_dir: Path | None = None,
 ) -> tuple[list[tuple[int, str, str, str]], str]:
     """Кадры: (number, voiceover, image_prompt, animation_prompt) + ошибка или ''."""
-    db_file = _db_path()
+    db_file = _db_path(data_dir=data_dir, project_id=project_id)
     if not db_file.is_file():
         return [], ""
     try:
@@ -459,7 +480,7 @@ def verify_project_disk(
     frames_total = img_pr_db = anim_pr_db = vo_db = 0
     parity_err = ""
     try:
-        db_file = _db_path()
+        db_file = _db_path(data_dir=data_dir, project_id=project_id)
         if not db_file.is_file():
             # БД ещё нет — для ранних статусов это не блок (0 кадров).
             frames_total = img_pr_db = anim_pr_db = vo_db = 0
@@ -483,39 +504,42 @@ def verify_project_disk(
         parity_err = str(e)
 
     # R48 обязателен только на/после anim_pr. На hero_ready старые scenes/
-    # пустой R48 НЕ должны PAUSE'ить генерацию c02.
-    _R48_REQUIRED_STATUSES = {
-        "animation_prompts_ready",
-        "generating_videos",
-        "videos_ready",
-        "generating_audio",
-        "audio_ready",
-        "generating_music",
-        "music_ready",
-        "assembling",
-        "assembled",
-        "published",
-    }
-    if scenes and status in _R48_REQUIRED_STATUSES:
-        r48_ok = (r48 >= len(scenes)) or (anim_pr_db >= len(scenes))
-        if not r48_ok:
-            repair.append("anim_pr")
-    else:
-        r48_ok = True
-    checks.append(
-        HarnessCheck(
-            "r48_anim",
-            r48_ok,
-            f"filled={max(r48, anim_pr_db)} scenes={len(scenes)} status={status}",
-        )
+    # видео на диске не должны требовать анимации до прогона шагов.
+    step_key = (step or "").strip().lower()
+    r48_strictly_required = (
+        status in _VIDEOS_REQUIRED_STATUSES
+        or step_key in _ANIM_PR_STEPS
+        or status == "animation_prompts_ready"
     )
 
-    if parity_err:
-        checks.append(HarnessCheck("frames_xlsx_parity", False, parity_err))
+    if not scenes_required and not videos_required:
+        checks.append(
+            HarnessCheck(
+                "frames_xlsx_parity",
+                True,
+                f"frames={frames_total} parity skipped (early phase: {status})",
+            )
+        )
+    elif parity_err:
+        checks.append(HarnessCheck("frames_xlsx_parity", False, f"db: {parity_err}"))
     else:
-        parity_ok = True
-        if status == "assembled" and scenes:
-            n = len(scenes)
+        # Для assembled требуем полный паритет: frames >= max(scenes, videos)
+        # и заполненность r45/r48/r49 в xlsx.
+        n = max(len(scenes), len(videos), 1)
+        if status == "assembled":
+            parity_ok = (
+                frames_total >= n
+                and img_pr_db >= n
+                and anim_pr_db >= n
+                and vo_db >= n
+                and r45 >= n
+                and (r48 >= n or not r48_strictly_required)
+                and vo_xlsx >= n
+            )
+            if not parity_ok:
+                repair.append("assemble")
+        else:
+            # На промежуточных фазах: достаточно совпадения хотя бы в БД ИЛИ xlsx
             parity_ok = (
                 frames_total >= n
                 and (img_pr_db >= n or r45 >= n)
@@ -536,7 +560,7 @@ def verify_project_disk(
             )
         )
 
-    nn_rows, nn_err = _load_frame_prompt_rows(project_id)
+    nn_rows, nn_err = _load_frame_prompt_rows(project_id, data_dir=data_dir)
     if nn_err:
         step_key = (step or "").strip().lower()
         if step_key in _IMG_PR_STEPS or status == "image_prompts_ready":
@@ -561,7 +585,7 @@ def verify_project_disk(
     # node_runs failed
     failed_n = 0
     try:
-        db_file = _db_path()
+        db_file = _db_path(data_dir=data_dir, project_id=project_id)
         if not db_file.is_file():
             checks.append(HarnessCheck("node_runs_failed", True, "failed=0 db_missing"))
         else:
@@ -687,7 +711,7 @@ def verify_project_http(
 
     artifacts: list[sqlite3.Row] = []
     try:
-        db = sqlite3.connect(str(_db_path()))
+        db = sqlite3.connect(str(_db_path(project_id=project_id)))
         db.row_factory = sqlite3.Row
         artifacts = db.execute(
             "SELECT kind, uuid, path FROM artifacts WHERE project_id=? ORDER BY kind, id",

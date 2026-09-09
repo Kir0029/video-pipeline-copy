@@ -22,6 +22,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import session_scope
+from app.project_db import project_db_session_scope, sync_project_row_to_master_db
 from app.models import Project
 from app.services.img_streams import acquire_image_slot, get_img_streams
 from app.services.montage_board_meta import (
@@ -200,7 +201,7 @@ async def _finalize_image_with_retry(
     last: BaseException | None = None
     for attempt in range(1, 8):
         try:
-            async with session_scope() as session:
+            async with project_db_session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is None:
                     raise RuntimeError(f"проект #{project_id} не найден")
@@ -234,7 +235,7 @@ async def _finalize_video_with_retry(
     last: BaseException | None = None
     for attempt in range(1, 8):
         try:
-            async with session_scope() as session:
+            async with project_db_session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is None:
                     raise RuntimeError(f"проект #{project_id} не найден")
@@ -277,7 +278,7 @@ async def _run_op_with_short_sessions(
     ai_project: Any = None
     prep: Any = None
 
-    async with session_scope() as session:
+    async with project_db_session_scope(project_id) as session:
         project = await session.get(Project, project_id)
         if project is None:
             raise RuntimeError(f"проект #{project_id} не найден")
@@ -346,7 +347,7 @@ async def _run_op_with_short_sessions(
         )
 
         async def _prepare_after_gpt():
-            async with session_scope() as session:
+            async with project_db_session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is None:
                     raise RuntimeError(f"проект #{project_id} не найден")
@@ -477,11 +478,15 @@ async def _run_ops_phase(
                 if fail_key:
                     add_failed_highlight(board, fail_key)
             board["pending_ops"] = _pending_snapshot()
-            async with session_scope() as session:
+            async with project_db_session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is not None:
                     set_montage_meta(project, board)
                     await session.commit()
+                    try:
+                        await sync_project_row_to_master_db(project)
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug("sync_project_row_to_master_db failed: {}", e)
             if on_progress is not None:
                 await on_progress(len(results), max(total, 1), result)
 
@@ -566,6 +571,10 @@ async def apply_montage_board(
     set_montage_meta(project, board)
     await session.flush()
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(project)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", e)
 
     op_status: list[str | None] = [None] * len(ops)
 
@@ -612,6 +621,10 @@ async def apply_montage_board(
     set_montage_meta(project, board)
     await session.flush()
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(project)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", e)
 
     return {
         "ok": not errors,

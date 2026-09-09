@@ -17,7 +17,25 @@ from app.services.excel_characters import (
 )
 
 
-def _db_path() -> Path:
+def _db_path(data_dir: Path | None = None, project_id: int | None = None) -> Path:
+    if data_dir is not None:
+        try:
+            pdb = Path(data_dir) / "project.db"
+            if pdb.is_file():
+                return pdb
+        except Exception:  # noqa: BLE001
+            pass
+
+    if project_id is not None:
+        try:
+            from app.project_db import resolve_project_db_path_by_id
+
+            pdb = resolve_project_db_path_by_id(project_id)
+            if pdb is not None and pdb.is_file():
+                return pdb
+        except Exception:  # noqa: BLE001
+            pass
+
     from app import settings as app_settings
 
     sp = getattr(app_settings.settings, "sqlite_path", None)
@@ -55,9 +73,11 @@ def png_corners_look_sheet_bg(path: Path) -> bool | None:
         return None
 
 
-def _latest_hero_artifacts(project_id: int) -> dict[str, dict[str, Any]]:
+def _latest_hero_artifacts(
+    project_id: int, data_dir: Path | None = None
+) -> dict[str, dict[str, Any]]:
     """excel_id → последняя meta artifact hero_reference."""
-    db_file = _db_path()
+    db_file = _db_path(data_dir=data_dir, project_id=project_id)
     if not db_file.is_file():
         return {}
     out: dict[str, dict[str, Any]] = {}

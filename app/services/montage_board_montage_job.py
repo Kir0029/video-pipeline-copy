@@ -9,6 +9,7 @@ from typing import Any
 from loguru import logger
 
 from app.db import session_scope
+from app.project_db import project_db_session_scope, sync_project_row_to_master_db
 from app.models import Project, ProjectStatus
 from app.services.event_bus import publish_project_event
 from app.services.montage_board_job_state import resolve_job_status
@@ -81,13 +82,17 @@ async def _cleanup_montage_interrupt(project_id: int) -> None:
     from app.services.project_state import compute_actual_status
     from app.services.run_sync import stop_active_running_node
 
-    async with session_scope() as session:
+    async with project_db_session_scope(project_id) as session:
         project = await session.get(Project, project_id)
         if project is None:
             return
         if project.status in (ProjectStatus.generating_audio, ProjectStatus.assembling):
             project.status = await compute_actual_status(session, project)
         await stop_active_running_node(session, project)
+        try:
+            await sync_project_row_to_master_db(project)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("sync_project_row_to_master_db failed: {}", exc)
 
 
 async def cancel_montage_job(project_id: int) -> bool:
@@ -96,7 +101,7 @@ async def cancel_montage_job(project_id: int) -> bool:
     if task is not None and not task.done():
         task.cancel()
     try:
-        async with session_scope() as session:
+        async with project_db_session_scope(project_id) as session:
             project = await session.get(Project, project_id)
             if project is None:
                 return False
@@ -112,6 +117,10 @@ async def cancel_montage_job(project_id: int) -> bool:
                     "finished_at": _utc_now(),
                 },
             )
+            try:
+                await sync_project_row_to_master_db(project)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("sync_project_row_to_master_db failed: {}", exc)
         await _publish_job(project_id, "cancelled")
         await _cleanup_montage_interrupt(project_id)
         return True
@@ -122,7 +131,7 @@ async def cancel_montage_job(project_id: int) -> bool:
 
 async def run_montage_job(project_id: int) -> None:
     try:
-        async with session_scope() as session:
+        async with project_db_session_scope(project_id) as session:
             project = await session.get(Project, project_id)
             if project is None:
                 return
@@ -135,16 +144,24 @@ async def run_montage_job(project_id: int) -> None:
                         "finished_at": _utc_now(),
                     },
                 )
+                try:
+                    await sync_project_row_to_master_db(project)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("sync_project_row_to_master_db failed: {}", exc)
                 await _publish_job(project_id, "cancelled")
                 return
             _set_job(
                 project,
                 {"status": "running", "error": None, "started_at": _utc_now(), "finished_at": None},
             )
+            try:
+                await sync_project_row_to_master_db(project)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("sync_project_row_to_master_db failed: {}", exc)
         await _publish_job(project_id, "running")
 
         if is_stop_requested(project_id):
-            async with session_scope() as session:
+            async with project_db_session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is not None:
                     _set_job(
@@ -155,10 +172,14 @@ async def run_montage_job(project_id: int) -> None:
                             "finished_at": _utc_now(),
                         },
                     )
+                    try:
+                        await sync_project_row_to_master_db(project)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("sync_project_row_to_master_db failed: {}", exc)
             await _publish_job(project_id, "cancelled")
             return
 
-        async with session_scope() as session:
+        async with project_db_session_scope(project_id) as session:
             project = await session.get(Project, project_id)
             if project is None:
                 return
@@ -171,6 +192,10 @@ async def run_montage_job(project_id: int) -> None:
                         "finished_at": _utc_now(),
                     },
                 )
+                try:
+                    await sync_project_row_to_master_db(project)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("sync_project_row_to_master_db failed: {}", exc)
                 await _publish_job(project_id, "cancelled")
                 return
             result = await remount_video(session, project, run_assemble=True)
@@ -183,6 +208,10 @@ async def run_montage_job(project_id: int) -> None:
                         "finished_at": _utc_now(),
                     },
                 )
+                try:
+                    await sync_project_row_to_master_db(project)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("sync_project_row_to_master_db failed: {}", exc)
                 await _publish_job(project_id, "cancelled")
                 return
             if result.get("error") and not result.get("done"):
@@ -195,6 +224,10 @@ async def run_montage_job(project_id: int) -> None:
                         "result": {"done": False},
                     },
                 )
+                try:
+                    await sync_project_row_to_master_db(project)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("sync_project_row_to_master_db failed: {}", exc)
                 await _publish_job(project_id, "error")
             else:
                 _set_job(
@@ -209,11 +242,15 @@ async def run_montage_job(project_id: int) -> None:
                         },
                     },
                 )
+                try:
+                    await sync_project_row_to_master_db(project)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("sync_project_row_to_master_db failed: {}", exc)
                 await _publish_job(project_id, "done")
     except asyncio.CancelledError:
         logger.info("montage_job #{} task cancelled", project_id)
         try:
-            async with session_scope() as session:
+            async with project_db_session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is not None:
                     _set_job(
@@ -224,6 +261,10 @@ async def run_montage_job(project_id: int) -> None:
                             "finished_at": _utc_now(),
                         },
                     )
+                    try:
+                        await sync_project_row_to_master_db(project)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("sync_project_row_to_master_db failed: {}", exc)
             await _publish_job(project_id, "cancelled")
         except Exception:  # noqa: BLE001
             pass
@@ -232,13 +273,17 @@ async def run_montage_job(project_id: int) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("montage_job #{} failed", project_id)
         try:
-            async with session_scope() as session:
+            async with project_db_session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is not None:
                     _set_job(
                         project,
                         {"status": "error", "error": str(exc), "finished_at": _utc_now()},
                     )
+                    try:
+                        await sync_project_row_to_master_db(project)
+                    except Exception as exc2:  # noqa: BLE001
+                        logger.debug("sync_project_row_to_master_db failed: {}", exc2)
             await _publish_job(project_id, "error")
         except Exception:  # noqa: BLE001
             pass

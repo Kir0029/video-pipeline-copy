@@ -233,6 +233,43 @@ def resolve_project_db_path(project_data_dir: Path | str) -> Path:
     return folder / "project.db"
 
 
+def resolve_project_db_path_by_id(project_id: int) -> Path | None:
+    """Синхронно определяет путь к project.db по project_id (для синхронных чекеров / harness)."""
+    if project_id in _PROJECT_DIR_CACHE:
+        p = resolve_project_db_path(_PROJECT_DIR_CACHE[project_id])
+        if p.is_file():
+            return p
+
+    # Попытка прочитать data_dir из state.db
+    from app.settings import settings
+
+    sp = getattr(settings, "sqlite_path", None)
+    if not sp:
+        return None
+    state_file = Path(sp)
+    if not state_file.is_file():
+        return None
+
+    try:
+        import sqlite3
+
+        conn = sqlite3.connect(str(state_file), timeout=3.0)
+        cur = conn.cursor()
+        cur.execute("SELECT data_dir FROM projects WHERE id = ?", (project_id,))
+        row = cur.fetchone()
+        conn.close()
+        if row and row[0]:
+            p_dir = Path(row[0])
+            _PROJECT_DIR_CACHE[project_id] = p_dir
+            pdb = resolve_project_db_path(p_dir)
+            if pdb.is_file():
+                return pdb
+    except Exception:  # noqa: BLE001
+        pass
+
+    return None
+
+
 def register_project_data_dir(project_id: int, data_dir: Path | str) -> None:
     """Зарегистрировать директорию проекта в кэше."""
     _PROJECT_DIR_CACHE[project_id] = Path(data_dir)
@@ -568,6 +605,26 @@ async def sync_project_row_to_project_db(
         from app.db import commit_with_retry
 
         await commit_with_retry(p_sess)
+
+
+async def sync_project_row_to_master_db(project: Project) -> None:
+    """Синхронизирует мета/статус и текстовые поля Project из project.db обратно в мастер state.db."""
+    from app.db import commit_with_retry, session_scope
+
+    async with session_scope() as master_sess:
+        m_proj = await master_sess.get(Project, project.id)
+        if m_proj is not None:
+            m_proj.status = project.status
+            if project.general_plan is not None:
+                m_proj.general_plan = project.general_plan
+            if project.script_text is not None:
+                m_proj.script_text = project.script_text
+            if project.hero_description is not None:
+                m_proj.hero_description = project.hero_description
+            if isinstance(project.meta, dict):
+                m_proj.meta = dict(project.meta)
+            m_proj.updated_at = project.updated_at
+            await commit_with_retry(master_sess)
 
 
 async def init_project_db(

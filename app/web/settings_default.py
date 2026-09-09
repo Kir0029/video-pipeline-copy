@@ -98,12 +98,13 @@ async def migrate_workflow_enrich_nodes(session: AsyncSession, wf: Workflow) -> 
     return True
 
 
-async def seed_default_workflow() -> None:
+async def seed_default_workflow(session: AsyncSession | None = None) -> None:
     """Создаёт или обновляет системный default Workflow."""
     nodes, edges = _default_graph()
-    async with session_scope() as session:
+
+    async def _run_seed(s: AsyncSession) -> None:
         existing = (
-            await session.execute(
+            await s.execute(
                 select(Workflow).where(Workflow.is_default == True)  # noqa: E712
             )
         ).scalar_one_or_none()
@@ -122,12 +123,19 @@ async def seed_default_workflow() -> None:
                 version=1,
                 meta={"layout_version": LAYOUT_VERSION},
             )
-            session.add(wf)
+            s.add(wf)
+            await s.flush()
         else:
-            await apply_default_graph(session, existing)
+            await apply_default_graph(s, existing)
 
-        all_workflows = (await session.execute(select(Workflow))).scalars().all()
+        all_workflows = (await s.execute(select(Workflow))).scalars().all()
         for wf in all_workflows:
             if wf.is_default:
                 continue
-            await migrate_workflow_enrich_nodes(session, wf)
+            await migrate_workflow_enrich_nodes(s, wf)
+
+    if session is not None:
+        await _run_seed(session)
+    else:
+        async with session_scope() as s:
+            await _run_seed(s)
