@@ -153,7 +153,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 last_apply_err: Exception | None = None
                 for apply_try in range(1, 6):
                     try:
-                        async with SessionLocal() as apply_session:
+                        from app.project_db import (
+                            project_db_session_scope,
+                            sync_project_row_to_master_db,
+                        )
+
+                        async with project_db_session_scope(project.id) as apply_session:
                             proj = await apply_session.get(Project, project.id)
                             if proj is None:
                                 raise RuntimeError(
@@ -167,6 +172,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                                 node_kind="img_pr",
                             )
                             await apply_session.commit()
+                            await sync_project_row_to_master_db(proj)
                         last_apply_err = None
                         break
                     except Exception as apply_err:  # noqa: BLE001

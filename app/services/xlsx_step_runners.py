@@ -38,10 +38,20 @@ _EMPTY_OPS_BACKOFF_S = (5.0, 10.0, 15.0)
 
 
 def img_pr_live_streams(project: Project | None) -> int:
-    """Параллель GPT для img_pr = «текстовые модели» справа (check_streams)."""
+    """Параллель GPT для img_pr: по умолчанию 4 потока (или из meta.img_pr_streams)."""
+    if project is not None and isinstance(project.meta, dict):
+        raw = project.meta.get("img_pr_streams")
+        if raw is not None:
+            try:
+                n = int(raw)
+                if n >= 1:
+                    return min(8, n)
+            except (TypeError, ValueError):
+                pass
     from app.services.check_streams import get_check_streams
 
-    return max(1, get_check_streams(project))
+    return max(4, get_check_streams(project))
+
 
 
 def _plan_empty_error(xlsx_path: Path, *, plan_len: int) -> RuntimeError:
@@ -447,8 +457,68 @@ _SPLIT_DB_HINT = (
     '{"закадр":"текст кадра 1","длительность":3},'
     '{"закадр":"текст кадра 2"}'
     "]}]}\n"
-    "Нужно ≥2 кадра. Каждый кадр — отдельный объект с полем закадр.\n"
+    "ФОРМАТ SHORTS: для ролика 60–75 сек делай 15–25 кадров (максимум 30). "
+    "Запрещено дробить на микро-фразы по 1-2 слова. Один кадр = законченная мысль (2-4 сек озвучки). "
+    "Нужно ≥2 и ≤30 кадров. Каждый кадр — отдельный объект с полем закадр.\n"
 )
+
+
+def clamp_parent_frames(frames_spec: list[dict], max_frames: int = 30) -> list[dict]:
+    """Мягко объединяет соседние короткие кадры, если GPT вернул > max_frames (для Shorts).
+
+    Сохраняет 100% текста закадра слово в слово в строгом хронологическом порядке.
+    """
+    if not frames_spec or len(frames_spec) <= max_frames:
+        return frames_spec
+
+    items: list[dict] = []
+    for item in frames_spec:
+        if isinstance(item, dict):
+            items.append(dict(item))
+        elif isinstance(item, str):
+            items.append({"закадр": item.strip()})
+
+    while len(items) > max_frames:
+        # Ищем пару соседних кадров с минимальной суммарной длиной текста
+        best_idx = 0
+        min_len = float("inf")
+        for i in range(len(items) - 1):
+            vo1 = str(items[i].get("закадр") or items[i].get("voiceover") or "").strip()
+            vo2 = str(items[i + 1].get("закадр") or items[i + 1].get("voiceover") or "").strip()
+            combined_len = len(vo1) + len(vo2)
+            if combined_len < min_len:
+                min_len = combined_len
+                best_idx = i
+
+        f1 = items[best_idx]
+        f2 = items[best_idx + 1]
+
+        vo1 = str(f1.get("закадр") or f1.get("voiceover") or "").strip()
+        vo2 = str(f2.get("закадр") or f2.get("voiceover") or "").strip()
+        combined_vo = f"{vo1} {vo2}".strip()
+
+        merged = dict(f1)
+        if "закадр" in f1 or "закадр" in f2:
+            merged["закадр"] = combined_vo
+        else:
+            merged["voiceover"] = combined_vo
+
+        dur1 = f1.get("длительность") or f1.get("duration")
+        dur2 = f2.get("длительность") or f2.get("duration")
+        if dur1 is not None or dur2 is not None:
+            try:
+                d1 = float(dur1) if dur1 is not None else 0.0
+                d2 = float(dur2) if dur2 is not None else 0.0
+                dur_key = "длительность" if ("длительность" in f1 or "длительность" in f2) else "duration"
+                merged[dur_key] = round(d1 + d2, 2)
+            except (ValueError, TypeError):
+                pass
+
+        items[best_idx : best_idx + 2] = [merged]
+
+    logger.info("clamp_parent_frames: clamped {} -> {} frames", len(frames_spec), len(items))
+    return items
+
 
 
 def extract_frames_spec_from_gpt_reply(reply: str, *, voiceover_path: Path | None) -> list[dict]:
@@ -526,6 +596,7 @@ async def run_split_xlsx(
             '{"ops":[{"target":"replace_frames","frames":[...]}]}'
         )
 
+    frames_spec = clamp_parent_frames(frames_spec, max_frames=30)
     # GPT as-is → DB (≥2 кадров). Лимиты символов — только в prompt settings.
     logger.info("split_db: кадров из GPT/fallback={}", len(frames_spec))
     return XlsxRoundtripResult(
@@ -578,12 +649,12 @@ async def _load_img_pr_context(
     skip_uuids: set[str] | None = None,
 ) -> tuple[list[Frame], list[dict], str]:
     """Кадры + Entity cards + general_plan для img_pr."""
-    from app.db import SessionLocal
     from app.models import Entity
+    from app.project_db import project_db_session_scope
     from app.services import db_v2
     from app.services.excel_characters import entity_cards_for_gpt
 
-    async with SessionLocal() as session:
+    async with project_db_session_scope(project.id) as session:
         proj = await session.get(Project, project.id)
         if proj is None:
             raise RuntimeError(f"project #{project.id} not found for img_pr db_frames")
