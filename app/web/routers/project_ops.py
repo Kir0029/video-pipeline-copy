@@ -1540,7 +1540,7 @@ async def patch_excel_gpt_config(
 async def gpt_operator_resolve(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.gpt_operator import resolve_operator
 
@@ -1553,7 +1553,7 @@ async def gpt_operator_patch(
     project_id: int,
     node_key: str,
     payload: dict,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     import asyncio
 
@@ -1594,6 +1594,10 @@ async def gpt_operator_patch(
                 "Подождите 10–30 с и нажмите роль ещё раз — бэкенд жив."
             ),
         ) from last_err
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[#{}] gpt_operator_patch sync to master: {}", project_id, exc)
     return {"ok": True, "resolve": resolved}
 
 
@@ -1763,7 +1767,7 @@ async def upload_check_agent_file(
     project_id: int,
     node_key: str,
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Загрузить .txt/.md агента проверки (режим «Готовый агент»)."""
     from sqlalchemy.orm.attributes import flag_modified
@@ -1782,6 +1786,10 @@ async def upload_check_agent_file(
         raise HTTPException(status_code=400, detail=str(e)) from e
     flag_modified(p, "meta")
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[#{}] upload_check_agent_file sync to master: {}", project_id, exc)
     return result
 
 
@@ -1789,7 +1797,7 @@ async def upload_check_agent_file(
 async def delete_check_agent_file(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Сбросить загруженный агент → снова builtin из prompts/check_operator."""
     from sqlalchemy.orm.attributes import flag_modified
@@ -1800,6 +1808,10 @@ async def delete_check_agent_file(
     result = clear_check_agent_file(p, node_key)
     flag_modified(p, "meta")
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[#{}] delete_check_agent_file sync to master: {}", project_id, exc)
     return result
 
 
@@ -1807,7 +1819,7 @@ async def delete_check_agent_file(
 async def get_check_agent_file(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Текст агента проверки (свой файл или builtin) — кнопка «Просмотр» в Studio."""
     from app.services.gpt_operator import load_check_agent_view
@@ -1826,7 +1838,7 @@ async def get_check_agent_file(
 async def get_check_prompt_preview(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Финальный master-промт проверки ровно как при запуске — просмотр в Studio."""
     from pathlib import Path
@@ -1906,7 +1918,7 @@ async def get_gpt_operator_source_prompt(
     project_id: int,
     node_key: str,
     source: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Текст мастер-промта ноды-источника (критерии проверки) — просмотр в Studio."""
     from app.services.gpt_operator import collect_source_prompts

@@ -151,6 +151,191 @@ def print_report(analysis: dict, *, as_json: bool = False) -> None:
     print()
 
 
+def render_html_report(analysis: dict, *, title: str = "Отчёт мониторинга video-pipeline") -> str:
+    """Генерирует автономный HTML-отчёт со стилями и таблицами."""
+    import html as _html
+
+    total_events = analysis.get("total_events", 0)
+    screenshots_count = analysis.get("screenshots_count", 0)
+    projects_seen = analysis.get("projects_seen", [])
+    timing = analysis.get("timing", {})
+    errors = analysis.get("errors", [])
+    event_counts = analysis.get("event_counts", {})
+
+    timing_rows = []
+    for step, stats in sorted(timing.items()):
+        timing_rows.append(
+            f"<tr>"
+            f"<td><code>{_html.escape(step)}</code></td>"
+            f"<td>{stats.get('count', 0)}</td>"
+            f"<td>{stats.get('total_s', 0):.1f}s</td>"
+            f"<td>{stats.get('avg_s', 0):.1f}s</td>"
+            f"<td>{stats.get('min_s', 0):.1f}s</td>"
+            f"<td>{stats.get('max_s', 0):.1f}s</td>"
+            f"</tr>"
+        )
+    timing_tbody = "\n".join(timing_rows) if timing_rows else "<tr><td colspan='6' class='empty'>Нет данных о таймингах</td></tr>"
+
+    error_rows = []
+    for e in errors[:50]:
+        ts = _html.escape(str(e.get("ts") or "?")[:19])
+        pid = _html.escape(str(e.get("project_id") or "—"))
+        etype = _html.escape(str(e.get("error_type") or "error"))
+        emsg = _html.escape(str(e.get("error_msg") or ""))
+        shot = e.get("screenshot")
+        shot_html = f"<a href='{_html.escape(shot)}' target='_blank'>скриншот</a>" if shot else "—"
+        error_rows.append(
+            f"<tr>"
+            f"<td class='mono'>{ts}</td>"
+            f"<td>#{pid}</td>"
+            f"<td><span class='badge badge-err'>{etype}</span></td>"
+            f"<td class='msg'>{emsg}</td>"
+            f"<td>{shot_html}</td>"
+            f"</tr>"
+        )
+    errors_tbody = "\n".join(error_rows) if error_rows else "<tr><td colspan='5' class='empty' style='color:#4ade80;'>Ошибок не обнаружено!</td></tr>"
+
+    events_rows = []
+    for ev, cnt in list(event_counts.items())[:20]:
+        events_rows.append(
+            f"<tr><td><code>{_html.escape(ev)}</code></td><td>{cnt}</td></tr>"
+        )
+    events_tbody = "\n".join(events_rows) if events_rows else "<tr><td colspan='2' class='empty'>Нет событий</td></tr>"
+
+    projects_display = ", ".join(f"#{p}" for p in projects_seen) if projects_seen else "нет"
+
+    return f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{_html.escape(title)}</title>
+<style>
+  :root {{
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --border: #334155;
+    --text: #f8fafc;
+    --muted: #94a3b8;
+    --primary: #38bdf8;
+    --accent: #818cf8;
+    --err: #f87171;
+    --err-bg: rgba(248, 113, 113, 0.15);
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 24px;
+    line-height: 1.5;
+  }}
+  .container {{ max-width: 1200px; margin: 0 auto; }}
+  header {{ margin-bottom: 24px; border-bottom: 1px solid var(--border); padding-bottom: 16px; }}
+  h1 {{ font-size: 24px; font-weight: 700; color: var(--text); }}
+  .metrics {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }}
+  .card {{ background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }}
+  .card-label {{ font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }}
+  .card-value {{ font-size: 28px; font-weight: 700; color: var(--primary); margin-top: 4px; }}
+  .card-value.err {{ color: var(--err); }}
+  section {{ background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 24px; }}
+  h2 {{ font-size: 18px; font-weight: 600; margin-bottom: 16px; color: var(--primary); }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }}
+  th {{ background: rgba(0,0,0,0.2); color: var(--muted); font-weight: 600; padding: 10px 12px; border-bottom: 1px solid var(--border); }}
+  td {{ padding: 10px 12px; border-bottom: 1px solid var(--border); }}
+  tr:hover td {{ background: rgba(255,255,255,0.02); }}
+  code {{ font-family: ui-monospace, SFMono-Regular, monospace; background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; }}
+  .mono {{ font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; color: var(--muted); }}
+  .msg {{ max-width: 450px; word-break: break-word; }}
+  .badge {{ display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }}
+  .badge-err {{ background: var(--err-bg); color: var(--err); border: 1px solid rgba(248, 113, 113, 0.3); }}
+  .empty {{ text-align: center; color: var(--muted); padding: 20px; }}
+  a {{ color: var(--primary); text-decoration: none; }}
+  a:hover {{ text-decoration: underline; }}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>{_html.escape(title)}</h1>
+    <p style="color: var(--muted); font-size: 13px; margin-top: 4px;">Проекты: {_html.escape(projects_display)}</p>
+  </header>
+
+  <div class="metrics">
+    <div class="card">
+      <div class="card-label">Всего событий</div>
+      <div class="card-value">{total_events}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Скриншотов</div>
+      <div class="card-value">{screenshots_count}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Ошибок</div>
+      <div class="card-value {'err' if errors else ''}">{len(errors)}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Уникальных проектов</div>
+      <div class="card-value">{len(projects_seen)}</div>
+    </div>
+  </div>
+
+  <section>
+    <h2>⏱ Тайминги шагов</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Действие</th>
+          <th>Кол-во</th>
+          <th>Сумма</th>
+          <th>Среднее</th>
+          <th>Мин</th>
+          <th>Макс</th>
+        </tr>
+      </thead>
+      <tbody>
+        {timing_tbody}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>⚠️ Ошибки ({len(errors)})</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Время</th>
+          <th>Проект</th>
+          <th>Тип</th>
+          <th>Сообщение</th>
+          <th>Скриншот</th>
+        </tr>
+      </thead>
+      <tbody>
+        {errors_tbody}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>📊 События (топ-20)</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Событие</th>
+          <th>Количество</th>
+        </tr>
+      </thead>
+      <tbody>
+        {events_tbody}
+      </tbody>
+    </table>
+  </section>
+</div>
+</body>
+</html>"""
+
+
 def main() -> None:
     p = argparse.ArgumentParser(
         prog="python -m app.monitor.report",
@@ -171,6 +356,13 @@ def main() -> None:
         action="store_true",
         help="вывод в формате JSON",
     )
+    p.add_argument(
+        "--html",
+        nargs="?",
+        const="",
+        default=None,
+        help="сохранить HTML-отчёт (путь к файлу или дефолт в папку мониторинга)",
+    )
     args = p.parse_args()
 
     monitor_dir = Path(args.dir)
@@ -189,6 +381,12 @@ def main() -> None:
 
     analysis = analyze(events)
     print_report(analysis, as_json=args.json)
+
+    if args.html is not None:
+        html_path = Path(args.html) if args.html else monitor_dir / f"report_{date_str}.html"
+        html_path.parent.mkdir(parents=True, exist_ok=True)
+        html_path.write_text(render_html_report(analysis), encoding="utf-8")
+        print(f"HTML-отчёт сохранён: {html_path}")
 
 
 if __name__ == "__main__":

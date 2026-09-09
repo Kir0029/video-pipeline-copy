@@ -343,6 +343,12 @@ def render_hero_text(
     )
     out = template.replace(HERO_PLACEHOLDER_STYLE, style)
     out = out.replace(HERO_PLACEHOLDER_BRIEF, (brief or "").strip())
+    # Если в пользовательском шаблоне не было плейсхолдера {{HERO_STYLE}},
+    # гарантированно добавляем блок Visual style в конец, чтобы стиль не терялся.
+    if HERO_PLACEHOLDER_STYLE not in template and style:
+        out = out + f"\n\n---\n\nVisual style (применять обязательно):\n{style}"
+    if HERO_PLACEHOLDER_BRIEF not in template and brief:
+        out = out + f"\n\n---\n\nОписание персонажа:\n{brief.strip()}"
     return out
 
 
