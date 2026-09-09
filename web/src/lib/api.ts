@@ -2298,6 +2298,28 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  assistProject: (body: {
+    topic_draft?: string;
+    title_draft?: string;
+    tone?: string | null;
+    voiceover_style?: string | null;
+    mode?: "expand" | "generate";
+  }) =>
+    http<{
+      ok: boolean;
+      title: string;
+      topic: string;
+      suggested_hero_mode: "hero" | "no_hero" | "auto";
+      tone?: string | null;
+      voiceover_style?: string | null;
+    }>(
+      "/api/meta-agent/assist-project",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+      90_000,
+    ),
 };
 
 export type GptWorkspaceSessionSummary = {

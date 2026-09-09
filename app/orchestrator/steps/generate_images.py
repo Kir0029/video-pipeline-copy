@@ -90,6 +90,36 @@ from app.services.step_cancel import (
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
+def is_transient_network_error(exc: BaseException) -> bool:
+    """Проверяет, является ли ошибка временным сетевым/DNS сбоем."""
+    msg = str(exc).lower()
+    transient_markers = (
+        "gaierror",
+        "getaddrinfo failed",
+        "clientconnectorerror",
+        "connecterror",
+        "readtimeout",
+        "connecttimeouterror",
+        "network unreachable",
+        "temporary failure in name resolution",
+        "connection reset",
+        "connection refused",
+        "timed out",
+        "timeout",
+        "502 bad gateway",
+        "503 service unavailable",
+        "504 gateway time-out",
+        "econnreset",
+        "enetunreach",
+    )
+    if any(m in msg for m in transient_markers):
+        return True
+    cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+    if cause and cause is not exc:
+        return is_transient_network_error(cause)
+    return False
+
+
 def _img_http_primary() -> bool:
     """Outsee HTTP — без Chrome CDP (как excel_hero)."""
     from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_image
@@ -1645,6 +1675,22 @@ async def _generate_and_send(
     except StepCancelledError:
         raise
     except OutseeImageError as e:
+        attrs = dict(frame.attrs or {})
+        t_count = int(attrs.get("transient_net_retries") or 0)
+        if is_transient_network_error(e) and t_count < 2:
+            attrs["transient_net_retries"] = t_count + 1
+            frame.attrs = attrs
+            logger.warning(
+                "[#{}] frame {}: временный сетевой/DNS сбой ({}) — рекью кадра (попытка {}/2)",
+                project.id,
+                frame.number,
+                type(e).__name__,
+                t_count + 1,
+            )
+            frame.status = FrameStatus.image_prompt_ready
+            await session.flush()
+            return
+
         # Не «возьму последнюю картинку», не silent retry: помечаем кадр
         # failed и шлём в TG понятное описание ошибки (с gen_id, baseline-ом
         # и тем что нашли). Пайплайн пойдёт к следующему кадру; общая логика

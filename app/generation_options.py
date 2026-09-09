@@ -91,7 +91,6 @@ ASPECT_RATIOS: list[OptionChoice] = [
 IMAGE_RESOLUTIONS: list[OptionChoice] = [
     OptionChoice("1k", "1K", "1K", "1K — компактное разрешение"),
     OptionChoice("2k", "2K", "2K", "2K — стандартное разрешение"),
-    OptionChoice("3k", "3K", "3K", "3K — Seedream 5 Lite"),
     OptionChoice("4k", "4K", "4K", "4K — максимальное качество"),
 ]
 
@@ -103,7 +102,7 @@ IMAGE_RESOLUTIONS_BY_GENERATOR: dict[str, tuple[str, ...]] = {
     "nano_banana_fast": ("1k", "2k"),
     "nano_banana": ("1k", "2k"),
     "seedream_4_5": ("2k", "4k"),
-    "seedream_5_0_lite": ("2k", "3k"),
+    "seedream_5_0_lite": ("2k",),
     "seedream_5_pro": ("1k", "2k"),
     "gpt_image_1_5": ("2k",),
     "gpt_image_2": ("1k",),
@@ -150,7 +149,7 @@ def clamp_image_resolution_id(
     rid = (resolution_id or "2k").lower()
     if rid in allowed:
         return rid
-    order = ("1k", "2k", "3k", "4k")
+    order = ("1k", "2k", "4k")
     try:
         want = order.index(rid) if rid in order else order.index("2k")
     except ValueError:

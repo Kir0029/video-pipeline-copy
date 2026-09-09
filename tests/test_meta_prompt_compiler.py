@@ -1,4 +1,4 @@
-﻿"""Тесты Мета-Агента: компилятор промптов и API-эндпоинты."""
+"""Тесты Мета-Агента: компилятор промптов и API-эндпоинты."""
 
 import pytest
 from unittest.mock import AsyncMock, patch
@@ -106,3 +106,56 @@ async def test_meta_agent_endpoints() -> None:
         test_file = folder / "test_meta_preset.md"
         if test_file.exists():
             test_file.unlink()
+
+
+@pytest.mark.asyncio
+async def test_assist_project_endpoint() -> None:
+    app = create_app()
+    transport = ASGITransport(app=app)
+
+    fake_json_reply = """```json
+{
+  "title": "Warhammer 40K: Бастион Кровавых Ангелов",
+  "topic": "Отряд Кровавых Ангелов отбивается от ксеноморфов в древних руинах.\\n\\nОзвучка и цитаты: Брутальный баритон. В паузах звучит: 'Плоть слаба, но долг вечен'.",
+  "suggested_hero_mode": "hero"
+}
+```"""
+    mock_gpt = AsyncMock()
+    mock_gpt.ask_fresh.return_value = fake_json_reply
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with patch("app.services.gpt_client.get_gpt_client", return_value=mock_gpt):
+            resp = await client.post(
+                "/api/meta-agent/assist-project",
+                json={
+                    "topic_draft": "Космодесантники в красной броне против ксеноморфов",
+                    "title_draft": "",
+                    "tone": "grimdark",
+                    "voiceover_style": "epic_quotes",
+                    "mode": "expand",
+                },
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["ok"] is True
+            assert data["title"] == "Warhammer 40K: Бастион Кровавых Ангелов"
+            assert "Озвучка и цитаты" in data["topic"]
+            assert data["suggested_hero_mode"] == "hero"
+            assert data["tone"] == "grimdark"
+            assert data["voiceover_style"] == "epic_quotes"
+
+            # Test generate mode preserving existing user title
+            resp_gen = await client.post(
+                "/api/meta-agent/assist-project",
+                json={
+                    "topic_draft": "",
+                    "title_draft": "Warhammer 40K: Бастион Кровавых Ангелов",
+                    "tone": "grimdark",
+                    "voiceover_style": "epic_quotes",
+                    "mode": "generate",
+                },
+            )
+            assert resp_gen.status_code == 200
+            data_gen = resp_gen.json()
+            assert data_gen["ok"] is True
+            assert data_gen["title"] == "Warhammer 40K: Бастион Кровавых Ангелов"

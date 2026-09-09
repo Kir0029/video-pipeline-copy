@@ -1,15 +1,16 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Loader2, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
 import { projectDisplayName } from "@/lib/project-display";
-import type { GenerationConfigPresetSettings, ProjectSummary } from "@/lib/types";
+import type { ProjectSummary } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -21,46 +22,25 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
-type Phase = "title" | "config" | "hero" | "auto" | "wizard";
+const TONE_CHOICES = [
+  { id: "grimdark", label: "Grimdark / Sci-Fi" },
+  { id: "action", label: "Кино-экшен" },
+  { id: "drama", label: "Философия / Драма" },
+  { id: "mystery", label: "Мистика / Саспенс" },
+] as const;
 
-type WizardAnswers = Record<string, string>;
+const VOICEOVER_CHOICES = [
+  { id: "epic_quotes", label: "Эпос + цитаты" },
+  { id: "narrator", label: "Кино-рассказчик" },
+  { id: "dynamic", label: "Динамичный темп" },
+  { id: "none", label: "Без диктора (SFX)" },
+] as const;
 
-type WizardQuestion = {
-  field: string;
-  title: string;
-  choices: { id: string; label: string }[];
-  cols: number;
-};
-
-function answersToSettings(
-  answers: WizardAnswers,
-  questions: WizardQuestion[],
-): GenerationConfigPresetSettings {
-  const out: GenerationConfigPresetSettings = {};
-  for (const q of questions) {
-    const v = answers[q.field];
-    if (v === undefined) continue;
-    if (q.field === "image_relax" || q.field === "video_relax") {
-      (out as Record<string, boolean>)[q.field] = v === "yes";
-    } else {
-      (out as Record<string, string>)[q.field] = v;
-    }
-  }
-  return out;
-}
-
-function presetToAnswers(settings: GenerationConfigPresetSettings): WizardAnswers {
-  const out: WizardAnswers = {};
-  for (const [k, v] of Object.entries(settings)) {
-    if (v === null || v === undefined) continue;
-    if (k === "image_relax" || k === "video_relax") {
-      out[k] = v ? "yes" : "no";
-    } else {
-      out[k] = String(v);
-    }
-  }
-  return out;
-}
+const HERO_CHOICES = [
+  { id: "auto", label: "Авто" },
+  { id: "hero", label: "С героями" },
+  { id: "no_hero", label: "Без героев" },
+] as const;
 
 export function NewProjectWizard({
   trigger,
@@ -72,128 +52,83 @@ export function NewProjectWizard({
   folderId?: string | null;
 }) {
   const [open, setOpen] = useState(false);
-  const [phase, setPhase] = useState<Phase>("title");
-  const [wizIndex, setWizIndex] = useState(0);
   const [projectTitle, setProjectTitle] = useState("");
+  const [topic, setTopic] = useState("");
+  const [selectedTone, setSelectedTone] = useState<string | null>(null);
+  const [selectedVoice, setSelectedVoice] = useState<string | null>(null);
   const [heroMode, setHeroMode] = useState<"hero" | "no_hero" | "auto">("auto");
-  const [autoMode, setAutoMode] = useState(false);
-  const [answers, setAnswers] = useState<WizardAnswers>({});
-  const [skipWizard, setSkipWizard] = useState(false);
-  const [savePresetAfterCreate, setSavePresetAfterCreate] = useState(false);
-  const [savePresetName, setSavePresetName] = useState("");
-  const [selectedPresetName, setSelectedPresetName] = useState<string | null>(null);
-
-  const catalog = useQuery({
-    queryKey: ["wizard-catalog"],
-    queryFn: api.wizardCatalog,
-    enabled: open,
-  });
-
-  const presetsQ = useQuery({
-    queryKey: ["generation-config-presets"],
-    queryFn: api.listGenerationConfigPresets,
-    enabled: open,
-  });
+  const [isAssisting, setIsAssisting] = useState(false);
 
   const qc = useQueryClient();
 
-  const wizardQuestions = useMemo(() => {
-    const qs = catalog.data?.questions ?? [];
-    const byGen = catalog.data?.image_resolutions_by_generator ?? {};
-    return qs
-      .filter((q) => {
-        if (q.field === "image_quality") {
-          const g = answers.image_generator;
-          if (!g || !["gpt_image_1_5", "gpt_image_2", "gpt_image_2_vip"].includes(g)) return false;
-        }
-        if (q.field === "video_relax" && answers.video_generator !== "veo_3_1_fast") {
-          return false;
-        }
-        return true;
-      })
-      .map((q) => {
-        if (q.field !== "image_resolution") return q;
-        const g = answers.image_generator;
-        const allowed = g ? byGen[g] : undefined;
-        if (!allowed?.length) return q;
-        return {
-          ...q,
-          choices: q.choices.filter((c) => allowed.includes(c.id)),
-          cols: Math.min(q.cols, Math.max(allowed.length, 1)),
-        };
-      });
-  }, [
-    catalog.data?.questions,
-    catalog.data?.image_resolutions_by_generator,
-    answers.video_generator,
-    answers.image_generator,
-  ]);
-
-  const deletePreset = useMutation({
-    mutationFn: (id: string) => api.deleteGenerationConfigPreset(id),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["generation-config-presets"] });
-      toast.success("Конфигурация удалена");
-    },
-    onError: (e) => toast.error(errorMessageFromUnknown(e)),
-  });
-
   const reset = () => {
-    setPhase("title");
-    setWizIndex(0);
     setProjectTitle("");
+    setTopic("");
+    setSelectedTone(null);
+    setSelectedVoice(null);
     setHeroMode("auto");
-    setAutoMode(true);
-    setAnswers({});
-    setSkipWizard(false);
-    setSavePresetAfterCreate(false);
-    setSavePresetName("");
-    setSelectedPresetName(null);
+    setIsAssisting(false);
   };
 
-  const buildPatch = () => {
-    const patch: Record<string, unknown> = {};
-    for (const q of wizardQuestions) {
-      const v = answers[q.field];
-      if (v === undefined) continue;
-      if (q.field === "image_relax" || q.field === "video_relax") {
-        patch[q.field] = v === "yes";
+  const handleAssist = async (mode: "expand" | "generate") => {
+    if (isAssisting) return;
+    setIsAssisting(true);
+    try {
+      const res = await api.assistProject({
+        topic_draft: topic.trim(),
+        title_draft: projectTitle.trim(),
+        tone: selectedTone,
+        voiceover_style: selectedVoice,
+        mode,
+      });
+      if (res.ok && res.topic) {
+        setTopic(res.topic);
+        if (res.title && !projectTitle.trim()) {
+          setProjectTitle(res.title);
+        }
+        if (res.suggested_hero_mode) {
+          setHeroMode(res.suggested_hero_mode);
+        }
+        toast.success(mode === "generate" ? "Идея сформирована ИИ-ассистентом" : "Сюжет доработан ИИ-ассистентом");
       } else {
-        patch[q.field] = v;
+        toast.error("ИИ не смог сформировать ответ. Попробуйте еще раз.");
       }
+    } catch (e) {
+      toast.error(errorMessageFromUnknown(e));
+    } finally {
+      setIsAssisting(false);
     }
-    if (wizardQuestions.some((q) => q.field === "video_relax") && answers.video_generator !== "veo_3_1_fast") {
-      patch.video_relax = false;
-    }
-    return patch;
   };
 
   const create = useMutation({
     mutationFn: async () => {
+      let finalTopic = topic.trim();
+      const toneLabel = TONE_CHOICES.find((t) => t.id === selectedTone)?.label;
+      const voiceLabel = VOICEOVER_CHOICES.find((v) => v.id === selectedVoice)?.label;
+
+      const extras: string[] = [];
+      if (toneLabel && !finalTopic.toLowerCase().includes(toneLabel.toLowerCase())) {
+        extras.push(`Атмосфера: ${toneLabel}`);
+      }
+      if (voiceLabel && !finalTopic.toLowerCase().includes(voiceLabel.toLowerCase())) {
+        extras.push(`Стиль озвучки: ${voiceLabel}`);
+      }
+      if (extras.length > 0) {
+        finalTopic = finalTopic ? `${finalTopic}\n\n${extras.join(". ")}.` : extras.join(". ") + ".";
+      }
+
+      const rawTitle = projectTitle.trim() || (topic.trim() ? topic.trim().slice(0, 40) : "Новый проект");
       const p = await api.createProject({
-        title: projectTitle.trim(),
-        topic: projectTitle.trim(),
+        title: rawTitle.slice(0, 120),
+        topic: finalTopic || rawTitle,
         hero_mode: heroMode,
-        auto_mode: autoMode,
+        auto_mode: false,
         sidebar_folder_id: folderId,
       });
-      const patch = buildPatch();
-      let result = p;
-      if (Object.keys(patch).length) {
-        result = await api.patchProject(p.id, patch);
-      }
-      const name = savePresetName.trim();
-      if (savePresetAfterCreate && name) {
-        await api.createGenerationConfigPreset({
-          name,
-          settings: answersToSettings(answers, wizardQuestions),
-        });
-      }
-      return result;
+      return p;
     },
     onSuccess: (p) => {
       qc.invalidateQueries({ queryKey: ["projects"] });
-      qc.invalidateQueries({ queryKey: ["generation-config-presets"] });
       onCreated(p);
       setOpen(false);
       reset();
@@ -202,382 +137,202 @@ export function NewProjectWizard({
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
-  const totalSteps = 4 + wizardQuestions.length;
-  const effectiveTotalSteps = skipWizard ? 4 : totalSteps;
-  const currentStepNum =
-    phase === "title"
-      ? 1
-      : phase === "config"
-        ? 2
-        : phase === "hero"
-          ? 3
-          : phase === "auto"
-            ? 4
-            : 4 + wizIndex + 1;
-
-  const currentWizQ = wizardQuestions[wizIndex];
-  const wizAnswered = phase !== "wizard" || !currentWizQ || answers[currentWizQ.field] !== undefined;
-
-  const applyPreset = (preset: { id: string; name: string; settings: GenerationConfigPresetSettings }) => {
-    setAnswers(presetToAnswers(preset.settings));
-    setSkipWizard(true);
-    setSelectedPresetName(preset.name);
-    setSavePresetAfterCreate(false);
-    setSavePresetName("");
-    toast.success(`Конфигурация «${preset.name}» применена`);
-  };
-
-  const goNext = () => {
-    if (phase === "title") {
-      if (!projectTitle.trim()) {
-        toast.error("Введите название проекта");
-        return;
-      }
-      setPhase("config");
-      return;
-    }
-    if (phase === "config") {
-      setPhase("hero");
-      return;
-    }
-    if (phase === "hero") {
-      setPhase("auto");
-      return;
-    }
-    if (phase === "auto") {
-      if (skipWizard || wizardQuestions.length === 0) {
-        create.mutate();
-        return;
-      }
-      setPhase("wizard");
-      setWizIndex(0);
-      return;
-    }
-    if (phase === "wizard") {
-      if (wizIndex < wizardQuestions.length - 1) {
-        setWizIndex((i) => i + 1);
-        return;
-      }
-      create.mutate();
-    }
-  };
-
-  const goBack = () => {
-    if (phase === "wizard") {
-      if (wizIndex > 0) {
-        setWizIndex((i) => i - 1);
-        return;
-      }
-      setPhase("auto");
-      return;
-    }
-    if (phase === "auto") {
-      setPhase("hero");
-      return;
-    }
-    if (phase === "hero") {
-      setPhase("config");
-      return;
-    }
-    if (phase === "config") {
-      setPhase("title");
-    }
-  };
-
-  const presets = presetsQ.data?.presets ?? [];
-  const isLast =
-    (phase === "auto" && (skipWizard || wizardQuestions.length === 0)) ||
-    (phase === "wizard" && wizIndex === wizardQuestions.length - 1);
-
   return (
     <Dialog
       open={open}
-      onOpenChange={(o) => {
-        setOpen(o);
-        if (!o) reset();
+      onOpenChange={(v) => {
+        setOpen(v);
+        if (!v) reset();
       }}
     >
       <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent
-        className="max-h-[90vh] max-w-lg overflow-y-auto rounded-2xl border border-zinc-800 bg-zinc-950/95 shadow-2xl backdrop-blur-xl"
-        onPointerDownOutside={(e) => e.preventDefault()}
-        onInteractOutside={(e) => e.preventDefault()}
-      >
-        <DialogHeader>
-          <DialogTitle className="text-base font-bold text-zinc-100">Новый проект</DialogTitle>
-          <DialogDescription className="text-xs font-medium text-sky-400">
-            Шаг {currentStepNum} из {effectiveTotalSteps}
+      <DialogContent className="sm:max-w-[560px] bg-card border-border p-6 shadow-2xl">
+        <DialogHeader className="space-y-1">
+          <DialogTitle className="text-lg font-semibold tracking-tight">Новый проект</DialogTitle>
+          <DialogDescription className="text-xs text-muted-foreground">
+            Задайте сюжет и ключевые параметры ролика. Технические настройки генераторов можно настроить прямо на нодах.
           </DialogDescription>
         </DialogHeader>
 
-        {(catalog.isLoading || presetsQ.isLoading) && (
-          <div className="flex justify-center py-8">
-            <Loader2 className="h-5 w-5 animate-spin text-sky-400" />
-          </div>
-        )}
-
-        {!catalog.isLoading && !presetsQ.isLoading && phase === "title" && (
-          <div className="flex flex-col gap-2">
-            <label className="text-xs font-semibold text-zinc-300">Название проекта</label>
+        <div className="space-y-4 py-2">
+          {/* Название */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Название проекта
+            </label>
             <Input
+              placeholder="Например: Warhammer 40K: Бастион Кровавых Ангелов"
               value={projectTitle}
               onChange={(e) => setProjectTitle(e.target.value)}
-              placeholder="Например: Полет в космос"
-              autoFocus
-              className="h-10 rounded-xl border-zinc-700 bg-zinc-900/80 px-3.5 text-sm font-medium text-zinc-100 placeholder:text-zinc-500 focus-visible:border-sky-500 focus-visible:ring-1 focus-visible:ring-sky-500/70"
+              className="h-9 bg-background"
             />
-            <p className="text-[11.5px] text-zinc-400">
-              Тема ролика заполняется отдельно в первой ноде графа.
-            </p>
           </div>
-        )}
 
-        {!catalog.isLoading && !presetsQ.isLoading && phase === "config" && (
-          <div className="flex flex-col gap-3">
-            <p className="text-sm font-semibold text-zinc-100">Конфигурация генерации</p>
-            {selectedPresetName && (
-              <div className="rounded-xl border border-sky-400/40 bg-sky-500/15 px-3.5 py-2.5 text-xs text-sky-200">
-                Применена: <b className="text-white">{selectedPresetName}</b> — детальные настройки генерации будут взяты из этой конфигурации
-              </div>
-            )}
-            {presets.length === 0 ? (
-              <p className="text-xs text-muted-foreground">Сохранённых конфигураций пока нет.</p>
-            ) : (
-              <div className="flex flex-col gap-2">
-                <p className="text-xs font-medium text-zinc-400">Сохранённые конфигурации</p>
-                {presets.map((p) => (
-                  <div key={p.id} className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => applyPreset(p)}
-                      className={cn(
-                        "flex-1 rounded-xl border px-3.5 py-2.5 text-left text-xs transition-all",
-                        selectedPresetName === p.name
-                          ? "border-sky-500/60 bg-sky-500/20 text-sky-100 ring-1 ring-sky-400/50 shadow-sm"
-                          : "border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800 hover:border-zinc-700",
-                      )}
-                    >
-                      <div className="font-bold text-zinc-100">{p.name}</div>
-                    </button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-9 w-9 shrink-0 text-zinc-400 hover:text-red-400 hover:bg-zinc-800/80 rounded-xl"
-                      onClick={() => deletePreset.mutate(p.id)}
-                      disabled={deletePreset.isPending}
-                      title="Удалить конфигурацию"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                setSkipWizard(false);
-                setSelectedPresetName(null);
-                setAnswers({});
-                setSavePresetAfterCreate(true);
-                setSavePresetName("");
-                toast.info("Выбран режим создания новой конфигурации");
-              }}
-              className={cn(
-                "rounded-xl border px-3.5 py-2.5 text-left text-xs transition-all",
-                savePresetAfterCreate && !skipWizard
-                  ? "border-sky-500/60 bg-sky-500/20 text-sky-100 ring-1 ring-sky-400/50 shadow-sm"
-                  : "border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800 hover:border-zinc-700",
-              )}
-            >
-              <div className="font-bold text-zinc-100">➕ Создание новой конфигурации</div>
-              <div className="text-zinc-400 mt-0.5">Пройти мастер и сохранить настройки в шаблон для будущих проектов</div>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setSkipWizard(false);
-                setSelectedPresetName(null);
-                setSavePresetAfterCreate(false);
-                toast.info("Выбран режим ручной настройки");
-              }}
-              className={cn(
-                "rounded-xl border px-3.5 py-2.5 text-left text-xs transition-all",
-                !skipWizard && !savePresetAfterCreate
-                  ? "border-sky-500/60 bg-sky-500/20 text-sky-100 ring-1 ring-sky-400/50 shadow-sm"
-                  : "border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800 hover:border-zinc-700",
-              )}
-            >
-              <div className="font-bold text-zinc-100">⚙️ Настроить вручную</div>
-              <div className="text-zinc-400 mt-0.5">Пройти все шаги без сохранения шаблона — только для этого проекта</div>
-            </button>
-          </div>
-        )}
-
-        {!catalog.isLoading && phase === "hero" && (
-          <div className="flex flex-col gap-2">
-            <label className="text-xs font-semibold text-zinc-300">Главный герой</label>
-            <div className="flex gap-2">
-              {(["auto", "hero", "no_hero"] as const).map((mode) => (
+          {/* Сюжет / Бриф + ИИ-ассистент */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Сюжет / Бриф
+              </label>
+              <div className="flex items-center gap-1.5">
                 <Button
-                  key={mode}
                   type="button"
                   variant="outline"
                   size="sm"
-                  className={cn(
-                    "flex-1 text-xs font-semibold rounded-xl transition-all h-9",
-                    heroMode === mode
-                      ? "border-sky-500/60 bg-sky-500/20 text-sky-200 ring-1 ring-sky-400/50 shadow-sm"
-                      : "border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800 hover:text-white",
-                  )}
-                  onClick={() => setHeroMode(mode)}
+                  disabled={isAssisting}
+                  onClick={() => handleAssist("expand")}
+                  className="h-7 px-3 text-xs font-semibold text-cyan-200 bg-cyan-950/50 hover:bg-cyan-900/70 border border-cyan-500/40 shadow-sm rounded-lg transition-all"
+                  title="Доработать сюжет с помощью ИИ-ассистента"
                 >
-                  {mode === "auto" ? "Авто" : mode === "hero" ? "Есть герой" : "Без героя"}
+                  {isAssisting ? <Loader2 className="h-3 w-3 animate-spin mr-1.5" /> : null}
+                  <span>Развить сюжет</span>
                 </Button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {!catalog.isLoading && phase === "auto" && (
-          <div className="flex flex-col gap-3">
-            <label className="text-xs font-semibold text-zinc-300">Режим проверки</label>
-            <div className="flex flex-col gap-2">
-              <button
-                type="button"
-                onClick={() => setAutoMode(false)}
-                className={cn(
-                  "rounded-xl border px-3.5 py-2.5 text-left text-xs transition-all",
-                  !autoMode
-                    ? "border-sky-500/60 bg-sky-500/20 text-sky-100 ring-1 ring-sky-400/50 shadow-sm"
-                    : "border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800",
-                )}
-              >
-                <div className="font-bold text-zinc-100">Ручная проверка</div>
-                <div className="text-zinc-400 mt-0.5">Жёлтый кружок на HITL-нодах, кнопки одобрения</div>
-              </button>
-              <button
-                type="button"
-                onClick={() => setAutoMode(true)}
-                className={cn(
-                  "rounded-xl border px-3.5 py-2.5 text-left text-xs transition-all",
-                  autoMode
-                    ? "border-sky-500/60 bg-sky-500/20 text-sky-100 ring-1 ring-sky-400/50 shadow-sm"
-                    : "border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800",
-                )}
-              >
-                <div className="font-bold text-zinc-100">Автопроверка GPT</div>
-                <div className="text-zinc-400 mt-0.5">Как массовая генерация — иконка GPT на нодах</div>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {!catalog.isLoading && phase === "wizard" && currentWizQ && (
-          <div className="flex flex-col gap-3">
-            <p className="text-sm font-semibold text-zinc-100">{currentWizQ.title}</p>
-            <div
-              className="grid gap-2"
-              style={{
-                gridTemplateColumns: `repeat(${Math.min(currentWizQ.cols, 4)}, minmax(0, 1fr))`,
-              }}
-            >
-              {currentWizQ.choices.map((ch) => (
                 <Button
-                  key={ch.id}
                   type="button"
                   variant="outline"
                   size="sm"
-                  className={cn(
-                    "h-auto min-h-10 whitespace-normal py-2 text-xs font-semibold rounded-xl transition-all",
-                    answers[currentWizQ.field] === ch.id
-                      ? "border-sky-500/60 bg-sky-500/20 text-sky-200 ring-1 ring-sky-400/50 shadow-sm"
-                      : "border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800 hover:text-white",
-                  )}
-                  onClick={() =>
-                    setAnswers((a) => {
-                      const next: WizardAnswers = {
-                        ...a,
-                        [currentWizQ.field]: ch.id,
-                      };
-                      if (currentWizQ.field === "image_generator") {
-                        const allowed =
-                          catalog.data?.image_resolutions_by_generator?.[ch.id] ?? [];
-                        if (
-                          allowed.length &&
-                          next.image_resolution &&
-                          !allowed.includes(next.image_resolution)
-                        ) {
-                          next.image_resolution = allowed.includes("2k")
-                            ? "2k"
-                            : allowed[0];
-                        }
-                      }
-                      return next;
-                    })
-                  }
+                  disabled={isAssisting}
+                  onClick={() => handleAssist("generate")}
+                  className="h-7 px-3 text-xs font-semibold text-cyan-300/90 hover:text-cyan-100 bg-cyan-950/20 hover:bg-cyan-950/50 border border-cyan-500/30 hover:border-cyan-400/50 rounded-lg transition-all"
+                  title="Сгенерировать сюжетную идею с помощью ИИ-ассистента"
                 >
-                  {ch.label}
+                  {isAssisting ? <Loader2 className="h-3 w-3 animate-spin mr-1.5" /> : null}
+                  <span>Идея с нуля</span>
                 </Button>
+              </div>
+            </div>
+            <Textarea
+              placeholder="Опишите сюжет своими словами или нажмите «Развить сюжет» для помощи ИИ-ассистента..."
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              rows={5}
+              className="resize-none bg-background text-sm leading-relaxed"
+            />
+          </div>
+
+          {/* Атмосфера (опционально) */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Атмосфера (по желанию)
+              </label>
+              {selectedTone && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedTone(null)}
+                  className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Сбросить
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {TONE_CHOICES.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setSelectedTone((prev) => (prev === t.id ? null : t.id))}
+                  className={cn(
+                    "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+                    selectedTone === t.id
+                      ? "border-cyan-400/60 bg-cyan-950/60 text-cyan-300 shadow-sm shadow-cyan-950/40 font-semibold"
+                      : "border-border bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  )}
+                >
+                  {t.label}
+                </button>
               ))}
             </div>
-            {savePresetAfterCreate && isLast && (
-              <div className="flex flex-col gap-1.5 pt-2">
-                <label className="text-xs font-semibold text-zinc-300">
-                  Имя конфигурации для сохранения
-                </label>
-                <Input
-                  value={savePresetName}
-                  onChange={(e) => setSavePresetName(e.target.value)}
-                  placeholder="Например: GPT Image 2 — 16:9 — Безлимит"
-                  className="h-10 rounded-xl border-zinc-700 bg-zinc-900/80 px-3.5 text-sm font-medium text-zinc-100 placeholder:text-zinc-500 focus-visible:border-sky-500 focus-visible:ring-1 focus-visible:ring-sky-500/70"
-                />
-              </div>
-            )}
           </div>
-        )}
 
-        <DialogFooter className="gap-2 sm:justify-between pt-3 border-t border-zinc-800/80">
+          {/* Озвучка и цитаты (опционально) */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Озвучка и цитаты (по желанию)
+              </label>
+              {selectedVoice && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedVoice(null)}
+                  className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Сбросить
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {VOICEOVER_CHOICES.map((v) => (
+                <button
+                  key={v.id}
+                  type="button"
+                  onClick={() => setSelectedVoice((prev) => (prev === v.id ? null : v.id))}
+                  className={cn(
+                    "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+                    selectedVoice === v.id
+                      ? "border-cyan-400/60 bg-cyan-950/60 text-cyan-300 shadow-sm shadow-cyan-950/40 font-semibold"
+                      : "border-border bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  )}
+                >
+                  {v.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Персонажи */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Персонажи
+            </label>
+            <div className="inline-flex rounded-lg border border-border p-0.5 bg-muted/30">
+              {HERO_CHOICES.map((h) => (
+                <button
+                  key={h.id}
+                  type="button"
+                  onClick={() => setHeroMode(h.id)}
+                  className={cn(
+                    "rounded-md px-3 py-1 text-xs font-medium transition-all",
+                    heroMode === h.id
+                      ? "bg-cyan-500/20 text-cyan-300 border border-cyan-400/30 shadow-sm font-semibold"
+                      : "text-muted-foreground hover:text-foreground border border-transparent"
+                  )}
+                >
+                  {h.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter className="pt-2 flex items-center justify-between sm:justify-between border-t border-border mt-1">
           <Button
             type="button"
             variant="ghost"
-            className="h-9 px-4 rounded-xl text-xs font-semibold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/80 transition-all"
-            onClick={goBack}
-            disabled={phase === "title" || create.isPending}
+            size="sm"
+            onClick={() => {
+              setOpen(false);
+              reset();
+            }}
           >
-            <ChevronLeft className="h-3.5 w-3.5 mr-1" />
-            Назад
+            Отмена
           </Button>
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              className="h-9 px-5 min-w-[88px] rounded-xl text-xs font-semibold text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800/80 border border-zinc-800 transition-all"
-              onClick={() => setOpen(false)}
-            >
-              Отмена
-            </Button>
-            <Button
-              type="button"
-              className="h-9 px-5 min-w-[88px] gap-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-500 border border-sky-400/50 shadow-md shadow-sky-500/20 rounded-xl transition-all disabled:opacity-50"
-              onClick={goNext}
-              disabled={
-                create.isPending ||
-                catalog.isLoading ||
-                presetsQ.isLoading ||
-                !wizAnswered ||
-                (savePresetAfterCreate && isLast && phase === "wizard" && !savePresetName.trim())
-              }
-            >
-              {create.isPending ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <ChevronRight className="h-3.5 w-3.5" />
-              )}
-              {isLast ? "Создать" : "Далее"}
-            </Button>
-          </div>
+          <Button
+            type="button"
+            size="sm"
+            disabled={create.isPending || (!projectTitle.trim() && !topic.trim())}
+            onClick={() => create.mutate()}
+            className="min-w-[140px] h-9 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 border border-cyan-400/50 shadow-md shadow-cyan-500/25 rounded-xl transition-all disabled:opacity-50"
+          >
+            {create.isPending ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Создание...
+              </>
+            ) : (
+              "Создать проект"
+            )}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

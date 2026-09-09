@@ -680,29 +680,57 @@ async def _host_via_uguu(client: httpx.AsyncClient, raw: bytes, mime: str, filen
 
 
 async def _host_via_litterbox(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
-    r = await client.post(
-        "https://litterbox.catbox.moe/resources/internals/api.php",
-        data={"reqtype": "fileupload", "time": "24h"},
-        files={"fileToUpload": (filename, raw, mime)},
-    )
-    text = (r.text or "").strip()
-    if r.status_code >= 400 or not text.startswith("http"):
-        raise OutseeApiError(
-            f"litterbox HTTP {r.status_code}: {text[:160] or '(empty body)'}"
-        )
-    return await _accept_hosted_url(client, text, host="litterbox", raw_len=len(raw))
+    url = "https://litterbox.catbox.moe/resources/internals/api.php"
+    for attempt in range(2):
+        try:
+            r = await client.post(
+                url,
+                data={"reqtype": "fileupload", "time": "24h"},
+                files={"fileToUpload": (filename, raw, mime)},
+            )
+            text = (r.text or "").strip()
+            if r.status_code < 400 and text.startswith("http"):
+                return await _accept_hosted_url(client, text, host="litterbox", raw_len=len(raw))
+            if attempt == 0 and r.status_code in {500, 502, 503, 504}:
+                await asyncio.sleep(1.0)
+                continue
+            raise OutseeApiError(
+                f"litterbox HTTP {r.status_code}: {text[:160] or '(empty body)'}"
+            )
+        except OutseeApiError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if attempt == 0:
+                await asyncio.sleep(1.0)
+                continue
+            raise OutseeApiError(f"litterbox connection fail: {exc}") from exc
+    raise OutseeApiError("litterbox: exhausted retries")
 
 
 async def _host_via_catbox(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
-    r = await client.post(
-        "https://catbox.moe/user/api.php",
-        data={"reqtype": "fileupload"},
-        files={"fileToUpload": (filename, raw, mime)},
-    )
-    text = (r.text or "").strip()
-    if r.status_code >= 400 or not text.startswith("http"):
-        raise OutseeApiError(f"catbox HTTP {r.status_code}: {text[:160] or '(empty body)'}")
-    return await _accept_hosted_url(client, text, host="catbox", raw_len=len(raw))
+    url = "https://catbox.moe/user/api.php"
+    for attempt in range(2):
+        try:
+            r = await client.post(
+                url,
+                data={"reqtype": "fileupload"},
+                files={"fileToUpload": (filename, raw, mime)},
+            )
+            text = (r.text or "").strip()
+            if r.status_code < 400 and text.startswith("http"):
+                return await _accept_hosted_url(client, text, host="catbox", raw_len=len(raw))
+            if attempt == 0 and r.status_code in {412, 429, 500, 502, 503, 504}:
+                await asyncio.sleep(1.0)
+                continue
+            raise OutseeApiError(f"catbox HTTP {r.status_code}: {text[:160] or '(empty body)'}")
+        except OutseeApiError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if attempt == 0:
+                await asyncio.sleep(1.0)
+                continue
+            raise OutseeApiError(f"catbox connection fail: {exc}") from exc
+    raise OutseeApiError("catbox: exhausted retries")
 
 
 async def _host_via_0x0(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
@@ -796,16 +824,18 @@ async def ensure_public_image_url(
         hosts.append(("yandex", _host_via_yandex))
         # Резервные хосты на случай временного сбоя S3
         hosts.extend([
-            ("litterbox", _host_via_litterbox),
-            ("catbox", _host_via_catbox),
-        ])
-        logger.info("outsee_api.frame: upload host=yandex (с fallback на litterbox/catbox, {} bytes)", len(raw))
-    else:
-        logger.info("outsee_api.frame: Yandex S3 не настроен, использую fallback (litterbox/catbox/uguu/0x0, {} bytes)", len(raw))
-        hosts.extend([
-            ("litterbox", _host_via_litterbox),
-            ("catbox", _host_via_catbox),
             ("uguu", _host_via_uguu),
+            ("litterbox", _host_via_litterbox),
+            ("catbox", _host_via_catbox),
+            ("0x0", _host_via_0x0),
+        ])
+        logger.info("outsee_api.frame: upload host=yandex (с fallback на uguu/litterbox/catbox/0x0, {} bytes)", len(raw))
+    else:
+        logger.info("outsee_api.frame: Yandex S3 не настроен, использую fallback (uguu/litterbox/catbox/0x0, {} bytes)", len(raw))
+        hosts.extend([
+            ("uguu", _host_via_uguu),
+            ("litterbox", _host_via_litterbox),
+            ("catbox", _host_via_catbox),
             ("0x0", _host_via_0x0),
         ])
 

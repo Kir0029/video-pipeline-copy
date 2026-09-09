@@ -8237,12 +8237,13 @@ async def _download_via_context(
     out_path: Path,
     *,
     timeout_ms: int = 120_000,
-    attempts: int = 3,
+    attempts: int = 5,
     project_id: int | None = None,
 ) -> None:
     """Скачивает файл по URL, используя тот же контекст (cookies/auth) страницы.
-    CDN outsee/hailuoai иногда медленный — поднимаем таймаут до 120 сек и
-    делаем до 3 попыток."""
+    CDN outsee/hailuoai/yandexcloud иногда медленный или даёт кратковременные
+    DNS/сетевые сбои — поднимаем таймаут до 120 сек, делаем до 5 попыток с
+    экспоненциальным backoff и fallback на httpx."""
     from app.services.step_cancel import abort_if_cancelled, await_with_cancel, sleep_cancellable
 
     ctx = page.context
@@ -8267,7 +8268,27 @@ async def _download_via_context(
                 type(e).__name__,
                 e,
             )
-            await sleep_cancellable(1.5 * i, project_id)
+            # Если упал Playwright api.get (DNS/gaierror/контекст), пробуем httpx
+            if url and url.startswith("http"):
+                try:
+                    import httpx
+
+                    async with httpx.AsyncClient(
+                        timeout=max(30.0, timeout_ms / 1000.0),
+                        follow_redirects=True,
+                    ) as hclient:
+                        hr = await await_with_cancel(hclient.get(url), project_id)
+                        if hr.status_code < 400 and len(hr.content) > 100:
+                            out_path.write_bytes(hr.content)
+                            logger.info(
+                                "_download_via_context: успешно скачано через httpx fallback: {} B",
+                                len(hr.content),
+                            )
+                            return
+                except Exception as he:  # noqa: BLE001
+                    logger.debug("_download_via_context: httpx fallback failed: {}", he)
+            backoff = min(15.0, 2.0 * (1.8 ** (i - 1)))
+            await sleep_cancellable(backoff, project_id)
     assert last is not None
     raise last
 
