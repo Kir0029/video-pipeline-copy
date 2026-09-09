@@ -57,8 +57,6 @@ export function NewProjectWizard({
   const [selectedTone, setSelectedTone] = useState<string | null>(null);
   const [selectedVoice, setSelectedVoice] = useState<string | null>(null);
   const [heroMode, setHeroMode] = useState<"hero" | "no_hero" | "auto">("auto");
-  const [isAssisting, setIsAssisting] = useState(false);
-
   const qc = useQueryClient();
 
   const reset = () => {
@@ -67,37 +65,6 @@ export function NewProjectWizard({
     setSelectedTone(null);
     setSelectedVoice(null);
     setHeroMode("auto");
-    setIsAssisting(false);
-  };
-
-  const handleAssist = async (mode: "expand" | "generate") => {
-    if (isAssisting) return;
-    setIsAssisting(true);
-    try {
-      const res = await api.assistProject({
-        topic_draft: topic.trim(),
-        title_draft: projectTitle.trim(),
-        tone: selectedTone,
-        voiceover_style: selectedVoice,
-        mode,
-      });
-      if (res.ok && res.topic) {
-        setTopic(res.topic);
-        if (res.title && !projectTitle.trim()) {
-          setProjectTitle(res.title);
-        }
-        if (res.suggested_hero_mode) {
-          setHeroMode(res.suggested_hero_mode);
-        }
-        toast.success(mode === "generate" ? "Идея сформирована ИИ-ассистентом" : "Сюжет доработан ИИ-ассистентом");
-      } else {
-        toast.error("ИИ не смог сформировать ответ. Попробуйте еще раз.");
-      }
-    } catch (e) {
-      toast.error(errorMessageFromUnknown(e));
-    } finally {
-      setIsAssisting(false);
-    }
   };
 
   const create = useMutation({
@@ -168,41 +135,13 @@ export function NewProjectWizard({
             />
           </div>
 
-          {/* Сюжет / Бриф + ИИ-ассистент */}
+          {/* Сюжет / Бриф */}
           <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Сюжет / Бриф
-              </label>
-              <div className="flex items-center gap-1.5">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={isAssisting}
-                  onClick={() => handleAssist("expand")}
-                  className="h-7 px-3 text-xs font-semibold text-cyan-200 bg-cyan-950/50 hover:bg-cyan-900/70 border border-cyan-500/40 shadow-sm rounded-lg transition-all"
-                  title="Доработать сюжет с помощью ИИ-ассистента"
-                >
-                  {isAssisting ? <Loader2 className="h-3 w-3 animate-spin mr-1.5" /> : null}
-                  <span>Развить сюжет</span>
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={isAssisting}
-                  onClick={() => handleAssist("generate")}
-                  className="h-7 px-3 text-xs font-semibold text-cyan-300/90 hover:text-cyan-100 bg-cyan-950/20 hover:bg-cyan-950/50 border border-cyan-500/30 hover:border-cyan-400/50 rounded-lg transition-all"
-                  title="Сгенерировать сюжетную идею с помощью ИИ-ассистента"
-                >
-                  {isAssisting ? <Loader2 className="h-3 w-3 animate-spin mr-1.5" /> : null}
-                  <span>Идея с нуля</span>
-                </Button>
-              </div>
-            </div>
+            <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Сюжет / Бриф
+            </label>
             <Textarea
-              placeholder="Опишите сюжет своими словами или нажмите «Развить сюжет» для помощи ИИ-ассистента..."
+              placeholder="Опишите сюжет и ключевые события ролика своими словами..."
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
               rows={5}
